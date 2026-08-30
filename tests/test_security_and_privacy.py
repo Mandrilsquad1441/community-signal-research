@@ -655,12 +655,13 @@ class ProvenanceAndPrivacyValidationTests(unittest.TestCase):
         )
         self.assertEqual(0, initialized.returncode, initialized.stderr)
         secret_path = self.study / ".author-key"
+        resolved_secret_path = secret_path.resolve(strict=True)
         outside_key = self.study.parent / "outside-author-key"
         outside_key.write_bytes(b"b" * 64)
         real_open = csr.os.open
 
         def substitute_descriptor(open_path: object, flags: int, *args: object) -> int:
-            if Path(open_path) == secret_path:
+            if Path(open_path).resolve(strict=True) == resolved_secret_path:
                 return real_open(outside_key, flags, *args)
             return real_open(open_path, flags, *args)
 
