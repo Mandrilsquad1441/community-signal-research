@@ -1,0 +1,4 @@
+interface:
+  display_name: "Community Signal Research"
+  short_description: "Evidence-first demand research from communities"
+  default_prompt: "Use $community-signal-research to turn these community discussions into an auditable, ranked demand report with a source ledger and evidence checks."

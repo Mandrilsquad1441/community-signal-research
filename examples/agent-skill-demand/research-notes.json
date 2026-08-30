@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "observations": [
+    {
+      "text": "Users explicitly ask for stronger research skills, specialized depth, verified sources, and proven workflows.",
+      "source_ids": ["src-codex-research-post", "src-codex-underwhelming", "src-codexhacks-poor-research", "src-codexhacks-tested-skill"]
+    },
+    {
+      "text": "A separate skill-quality thread calls for repeatability, schemas, objective evaluation, and benchmarks rather than generic expertise personas.",
+      "source_ids": ["src-skills-post", "src-skills-repeatability", "src-skills-schema", "src-skills-testing", "src-skills-benchmarks"]
+    },
+    {
+      "text": "One reported custom Codex research system works well, showing the job can be solved without this particular packaged skill.",
+      "source_ids": ["src-codex-existing-workflow"]
+    }
+  ],
+  "inferences": [
+    {
+      "text": "The defensible product wedge is auditability and community-evidence integrity, implemented as a testable procedure rather than generic deep-research prose.",
+      "signal_ids": ["sig-auditable-research", "sig-procedural-skill-quality"]
+    }
+  ],
+  "recommendation": {
+    "text": "Build and publish a portable, local-first skill with deterministic provenance, independence, WTP, counterevidence, and coverage gates, then evaluate it against a no-skill baseline.",
+    "signal_ids": ["sig-auditable-research", "sig-procedural-skill-quality"],
+    "caveats": [
+      "This quick purposive study supports a prototype decision, not a market-size or population-demand claim.",
+      "The research-quality signal is recurring inside this sample; the procedural-skill signal remains anecdotal because every supporting record comes from one thread.",
+      "Neither signal establishes willingness to pay."
+    ]
+  },
+  "next_tests": [
+    "Run preregistered cold baseline-versus-skill trials on frozen adversarial community datasets.",
+    "Repeat the demand study on GitHub Issues or Discussions and Hacker News to test source diversity."
+  ],
+  "coverage_notes": [
+    "All four Reddit searches were manually inspected; two result sets were truncated after one page.",
+    "Engagement snapshots are retained for context and excluded from scoring."
+  ],
+  "stop_reason": "The quick-mode source, thread, community, platform, and counterquery floors were reached; further work is assigned to the preregistered cold evaluation and cross-platform follow-up."
+}

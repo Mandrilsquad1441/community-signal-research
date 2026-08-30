@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "signals": [
+    {
+      "id": "sig-auditable-research",
+      "name": "More reliable community and content research for coding agents",
+      "hypothesis": "Coding-agent users need a community and content research workflow that reduces generic or assumption-heavy results and binds decisions to traceable evidence.",
+      "decision_relevance": "A portable Agent Skill can fill the gap without requiring a hosted scraper or proprietary research harness.",
+      "support_citations": [
+        "src-codex-research-post",
+        "src-codex-standards",
+        "src-codex-underwhelming",
+        "src-codexhacks-poor-research",
+        "src-codexhacks-tested-skill"
+      ],
+      "counter_citations": ["src-codex-existing-workflow"],
+      "claimed_level": "recurring",
+      "wtp_statement": null,
+      "wtp_citations": [],
+      "alternative_explanations": [
+        "The observed need may be satisfied by better prompts or bespoke multi-agent workflows rather than a reusable skill.",
+        "A purposive Reddit sample can overrepresent users motivated to complain or optimize their workflows."
+      ],
+      "disconfirming_evidence_needed": "Cold comparisons showing that a simpler prompt or existing public skill produces equally traceable decisions with fewer errors and less effort."
+    },
+    {
+      "id": "sig-procedural-skill-quality",
+      "name": "Skills that encode a testable procedure",
+      "hypothesis": "Skill users value repeatable procedures, schemas, and objective tests more than generic expertise personas or reminders.",
+      "decision_relevance": "The research skill should include concrete data contracts and an executable audit rather than prose alone.",
+      "support_citations": [
+        "src-skills-post",
+        "src-skills-repeatability",
+        "src-skills-schema",
+        "src-skills-testing",
+        "src-skills-benchmarks"
+      ],
+      "counter_citations": [],
+      "claimed_level": "anecdotal",
+      "wtp_statement": null,
+      "wtp_citations": [],
+      "alternative_explanations": [
+        "The discussion comes from one thread and may reflect a local norm rather than a recurring cross-thread need.",
+        "Users may prefer short reminder-style skills when the task is simple."
+      ],
+      "disconfirming_evidence_needed": "Independent threads or controlled comparisons showing generic persona skills are equally consistent and testable."
+    }
+  ]
+}

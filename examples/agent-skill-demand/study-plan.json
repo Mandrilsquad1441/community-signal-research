@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "study_id": "agent-skill-demand-2026",
+  "question": "What evidence supports an auditable community-research skill for coding agents?",
+  "decision": "Decide whether to build and publish community-signal-research.",
+  "mode": "quick",
+  "as_of": "2026-08-30",
+  "recency_days": 365,
+  "date_window": {
+    "start": "2025-08-30",
+    "end": "2026-08-30"
+  },
+  "population": "People discussing Codex or Claude skills and coding-agent research workflows on public Reddit communities.",
+  "scope": {
+    "platforms": ["reddit"],
+    "communities": ["r/codex", "r/CodexHacks", "r/claudeskills"],
+    "languages": ["en"]
+  },
+  "inclusion_criteria": [
+    "First-person research pain, requested research capability, repeatable workflow, evaluation need, or working counterexample",
+    "Direct post or comment permalink with visible publication and engagement snapshot metadata"
+  ],
+  "exclusion_criteria": [
+    "Generic tool praise without a research or skill-quality mechanism",
+    "Promotion, copied summaries, and comments without enough context to classify"
+  ],
+  "coverage_targets": {
+    "source_units": 8,
+    "threads": 3,
+    "communities": 3,
+    "platforms": 1,
+    "counter_queries": 1
+  },
+  "counterevidence_status": "complete",
+  "stop_condition": "Three relevant communities and the quick-mode evidence floor were covered, including a working counterexample.",
+  "limitations": [
+    "Reddit search ranking is opaque and the sample is purposive rather than representative.",
+    "The study demonstrates the method on a narrow product decision and does not estimate total market demand.",
+    "Observed account keys cannot establish that each account maps to a unique person."
+  ]
+}

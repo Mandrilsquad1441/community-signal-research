@@ -1,0 +1,137 @@
+{
+  "artifact_hashes": {
+    "findings.md": "sha256:4c686e80c8a6b681b486586673dd9fa6accc0d127cebf4655f43d6b8f0aab17c",
+    "signals.csv": "sha256:35384bcfc4f895e96acb6b0d6c05a51dfff24693a5c21c93bf78333965506941"
+  },
+  "counts": {
+    "duplicate_groups": 11,
+    "errors": 0,
+    "queries": 4,
+    "signals": 2,
+    "sources": 11,
+    "warnings": 0
+  },
+  "coverage": {
+    "actual": {
+      "communities": 3,
+      "counter_queries": 2,
+      "platforms": 1,
+      "source_units": 11,
+      "threads": 3
+    },
+    "declared_targets": {
+      "communities": 3,
+      "counter_queries": 1,
+      "platforms": 1,
+      "source_units": 8,
+      "threads": 3
+    },
+    "effective_targets": {
+      "communities": 3,
+      "counter_queries": 1,
+      "platforms": 1,
+      "source_units": 8,
+      "threads": 3
+    },
+    "promotion_risk_share": 0.0,
+    "query_count": 4,
+    "thread_concentration": 0.5,
+    "truncated_query_count": 2
+  },
+  "coverage_execution_score": 100.0,
+  "input_fingerprint": "sha256:d2f965d0d5837c36405ddceaa2607f25f5f68de76c3f27a2a5d28b67ad747214",
+  "issues": [],
+  "schema_version": "1.0",
+  "signals": [
+    {
+      "calculated_level": "recurring",
+      "claimed_level": "recurring",
+      "communities": 2,
+      "costly_behavior_types": [
+        "adoption",
+        "workaround"
+      ],
+      "counter_query_count": 1,
+      "counter_source_ids": [
+        "src-codex-existing-workflow"
+      ],
+      "counter_sources": 1,
+      "counterevidence_level": "present",
+      "countersearch_status": "complete",
+      "distinct_author_keys": 3,
+      "distinct_threads": 2,
+      "evidence_score": 65.5,
+      "hypothesis": "Coding-agent users need a community and content research workflow that reduces generic or assumption-heavy results and binds decisions to traceable evidence.",
+      "ineligible_support_groups": 0,
+      "ineligible_support_source_ids": [],
+      "name": "More reliable community and content research for coding agents",
+      "platforms": 1,
+      "promotion_risk_share": 0.0,
+      "rank": 1,
+      "ranked_evidence_types": [
+        "adoption",
+        "problem",
+        "workaround"
+      ],
+      "recent_share": 1.0,
+      "signal_id": "sig-auditable-research",
+      "support_groups": 5,
+      "support_source_ids": [
+        "src-codex-research-post",
+        "src-codex-standards",
+        "src-codex-underwhelming",
+        "src-codexhacks-poor-research",
+        "src-codexhacks-tested-skill"
+      ],
+      "unrounded_score": "65.5",
+      "wtp_authors": 0,
+      "wtp_evidence": "none",
+      "wtp_status": "none",
+      "wtp_threads": 0
+    },
+    {
+      "calculated_level": "anecdotal",
+      "claimed_level": "anecdotal",
+      "communities": 1,
+      "costly_behavior_types": [
+        "adoption"
+      ],
+      "counter_query_count": 1,
+      "counter_source_ids": [],
+      "counter_sources": 0,
+      "counterevidence_level": "none_found_in_coverage",
+      "countersearch_status": "complete",
+      "distinct_author_keys": 5,
+      "distinct_threads": 1,
+      "evidence_score": 62.5,
+      "hypothesis": "Skill users value repeatable procedures, schemas, and objective tests more than generic expertise personas or reminders.",
+      "ineligible_support_groups": 0,
+      "ineligible_support_source_ids": [],
+      "name": "Skills that encode a testable procedure",
+      "platforms": 1,
+      "promotion_risk_share": 0.0,
+      "rank": 2,
+      "ranked_evidence_types": [
+        "adoption",
+        "problem"
+      ],
+      "recent_share": 1.0,
+      "signal_id": "sig-procedural-skill-quality",
+      "support_groups": 5,
+      "support_source_ids": [
+        "src-skills-benchmarks",
+        "src-skills-post",
+        "src-skills-repeatability",
+        "src-skills-schema",
+        "src-skills-testing"
+      ],
+      "unrounded_score": "62.5",
+      "wtp_authors": 0,
+      "wtp_evidence": "none",
+      "wtp_status": "none",
+      "wtp_threads": 0
+    }
+  ],
+  "status": "pass",
+  "tool_version": "1.0.0"
+}

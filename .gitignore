@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.author-key
+**/.author-key
+.tmp-*/
+.csr-artifacts-stage-*/
+.csr-artifacts-backup-*/
+.coverage
+htmlcov/
+.pytest_cache/
