@@ -1,13 +1,14 @@
 {
   "artifact_hashes": {
-    "findings.md": "sha256:4c686e80c8a6b681b486586673dd9fa6accc0d127cebf4655f43d6b8f0aab17c",
-    "signals.csv": "sha256:35384bcfc4f895e96acb6b0d6c05a51dfff24693a5c21c93bf78333965506941"
+    "findings.md": "sha256:d3a168a6fe14478a22b41bbfcb1b78562be60f245fef544fc4a92c9ed6024797",
+    "signals.csv": "sha256:6ae850a584db7d3a7454149202b4fc42a5eff0d1f06a67ed86d28e282a8f205c"
   },
   "counts": {
-    "duplicate_groups": 11,
+    "collapsed_duplicate_groups": 0,
     "errors": 0,
     "queries": 4,
     "signals": 2,
+    "source_groups_after_collapse": 11,
     "sources": 11,
     "warnings": 0
   },
@@ -39,7 +40,8 @@
     "truncated_query_count": 2
   },
   "coverage_execution_score": 100.0,
-  "input_fingerprint": "sha256:d2f965d0d5837c36405ddceaa2607f25f5f68de76c3f27a2a5d28b67ad747214",
+  "duplicate_groups": [],
+  "input_fingerprint": "sha256:5d91e1151c650da899b47f0cbfa203e652d15ca026d4e0394220dc6045671080",
   "issues": [],
   "schema_version": "1.0",
   "signals": [
@@ -47,6 +49,7 @@
       "calculated_level": "recurring",
       "claimed_level": "recurring",
       "communities": 2,
+      "complete_counter_query_count": 1,
       "costly_behavior_types": [
         "adoption",
         "workaround"
@@ -86,6 +89,7 @@
       "unrounded_score": "65.5",
       "wtp_authors": 0,
       "wtp_evidence": "none",
+      "wtp_source_ids": [],
       "wtp_status": "none",
       "wtp_threads": 0
     },
@@ -93,6 +97,7 @@
       "calculated_level": "anecdotal",
       "claimed_level": "anecdotal",
       "communities": 1,
+      "complete_counter_query_count": 1,
       "costly_behavior_types": [
         "adoption"
       ],
@@ -128,6 +133,7 @@
       "unrounded_score": "62.5",
       "wtp_authors": 0,
       "wtp_evidence": "none",
+      "wtp_source_ids": [],
       "wtp_status": "none",
       "wtp_threads": 0
     }

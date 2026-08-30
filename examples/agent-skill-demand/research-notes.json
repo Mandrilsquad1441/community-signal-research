@@ -2,15 +2,15 @@
   "schema_version": "1.0",
   "observations": [
     {
-      "text": "Users explicitly ask for stronger research skills, specialized depth, verified sources, and proven workflows.",
-      "source_ids": ["src-codex-research-post", "src-codex-underwhelming", "src-codexhacks-poor-research", "src-codexhacks-tested-skill"]
+      "text": "Is there a researcher skill people here use with Codex?",
+      "source_ids": ["src-codex-research-post"]
     },
     {
-      "text": "A separate skill-quality thread calls for repeatability, schemas, objective evaluation, and benchmarks rather than generic expertise personas.",
-      "source_ids": ["src-skills-post", "src-skills-repeatability", "src-skills-schema", "src-skills-testing", "src-skills-benchmarks"]
+      "text": "The whole point of a skill is to fix something Claude consistently gets wrong.",
+      "source_ids": ["src-skills-post"]
     },
     {
-      "text": "One reported custom Codex research system works well, showing the job can be solved without this particular packaged skill.",
+      "text": "Overall though it is working well as a research assistant",
       "source_ids": ["src-codex-existing-workflow"]
     }
   ],

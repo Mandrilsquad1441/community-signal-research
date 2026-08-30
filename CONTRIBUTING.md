@@ -2,14 +2,17 @@
 
 Contributions that make the research more auditable, conservative, portable, or reproducible are welcome. Please open a focused issue before proposing a new data source, schema change, or scoring rule so the evidence and compatibility tradeoffs are explicit.
 
-## Development setup
+## Development and release gate
 
-The runtime and tests use only the Python standard library. Use Python 3.10 or newer from the repository root:
+The core runtime and deterministic Python harness use only the standard library. Use Python 3.10 or newer from the repository root:
 
 ```text
 python -m py_compile scripts/community_signal.py
-python -m unittest discover -s tests -p "test_*.py" -v
+python -B -m unittest discover -s tests -p "test_*.py" -v
+python -B -m unittest discover -s evals/tests -v
+python -B evals/harness.py verify
 python .github/scripts/smoke_cli.py
+python scripts/community_signal.py audit examples/agent-skill-demand --strict --json
 ```
 
 If Codex's bundled skill validator is installed, also run:
@@ -19,6 +22,14 @@ python /path/to/skill-creator/scripts/quick_validate.py .
 ```
 
 CI independently runs the open Agent Skills reference validator and exercises Python 3.10, 3.12, and 3.14 on Linux, Windows, and macOS.
+
+Before a behavioral release run, commit the candidate, require an entirely clean worktree, and preflight the bundled operator with the exact intended model and reasoning setting:
+
+```text
+python evals/run_trials.py preflight --model gpt-5.4-mini --reasoning low
+```
+
+The core helper, unit suites, fixture verification, and CLI/example checks are offline. Operator preflight and the forward evaluation require an installed, authenticated Codex CLI and service connectivity; do not describe the whole evaluation suite as offline. Follow `evals/PROTOCOL.md` for commit binding, ordinary external directories (no symlinks, Windows junctions, or reparse points), exclusive first-attempt execution, blinding, and scoring.
 
 ## Pull requests
 

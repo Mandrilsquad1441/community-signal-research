@@ -8,7 +8,7 @@
   "properties": {
     "schema_version": {"const": "1.0"},
     "scorer_id": {"type": "string", "minLength": 1, "maxLength": 80},
-    "blind_id": {"type": "string", "pattern": "^blind-[0-9a-f]{16}$"},
+    "blind_id": {"type": "string", "pattern": "^blind-[0-9a-f]{32}$"},
     "case_id": {"type": "string", "pattern": "^case-[0-9]{2}-[a-z0-9-]+$"},
     "ratings": {
       "type": "object",

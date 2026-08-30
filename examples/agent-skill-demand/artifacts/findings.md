@@ -1,6 +1,6 @@
 # Community signal findings
 
-Input fingerprint: `sha256:d2f965d0d5837c36405ddceaa2607f25f5f68de76c3f27a2a5d28b67ad747214`
+Input fingerprint: `sha256:5d91e1151c650da899b47f0cbfa203e652d15ca026d4e0394220dc6045671080`
 
 **Decision:** Decide whether to build and publish community\-signal\-research\.
 
@@ -12,12 +12,14 @@ Input fingerprint: `sha256:d2f965d0d5837c36405ddceaa2607f25f5f68de76c3f27a2a5d28
 
 > The offline audit proves internal ledger consistency and reproducible output, not remote-page authenticity, account identity, semantic classification, search completeness, or representativeness.
 
+> Supplied-private source-file hashes are caller-declared provenance. The helper preserves their format and value but does not receive the underlying files and cannot authenticate the file/digest relationship.
+
 ## Ranked hypotheses
 
-| Rank | Signal | Evidence label | Evidence score | Author keys | Threads | Excluded cited support | Counter sources | WTP |
-| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 1 | More reliable community and content research for coding agents | `recurring` | 65.5 | 3 | 2 | 0 | 1 | `none` |
-| 2 | Skills that encode a testable procedure | `anecdotal` | 62.5 | 5 | 1 | 0 | 0 | `none` |
+| Rank | Signal | Declared label | Computed ceiling | Evidence score | Author keys | Threads | Excluded cited support | Counter sources | WTP |
+| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | More reliable community and content research for coding agents | `recurring` | `recurring` | 65.5 | 3 | 2 | 0 | 1 | `none` |
+| 2 | Skills that encode a testable procedure | `anecdotal` | `anecdotal` | 62.5 | 5 | 1 | 0 | 0 | `none` |
 
 ## 1. More reliable community and content research for coding agents
 
@@ -25,7 +27,7 @@ Input fingerprint: `sha256:d2f965d0d5837c36405ddceaa2607f25f5f68de76c3f27a2a5d28
 
 **Decision relevance:** A portable Agent Skill can fill the gap without requiring a hosted scraper or proprietary research harness\.
 
-**Evidence ceiling:** `recurring` from 3 distinct observed author keys across 2 threads and 2 communities. Score 65.5/100 within this sample.
+**Declared evidence label:** `recurring`. **Computed ceiling:** `recurring` from 3 distinct observed author keys across 2 threads and 2 communities. Score 65.5/100 within this sample.
 
 **Countersearch:** `complete`; counterevidence `present`. **Costly behavior observed:** adoption, workaround.
 
@@ -37,13 +39,19 @@ Input fingerprint: `sha256:d2f965d0d5837c36405ddceaa2607f25f5f68de76c3f27a2a5d28
 
 > "I always get reasoning bleed in the final document" - [src\-codex\-underwhelming](https://www.reddit.com/r/codex/comments/1sqk7xj/comment/oheyczg/), 2026\-04\-21; `problem`, `workaround`
 
-> "it pulled me comment mining skill still same shit level result" - [src\-codexhacks\-poor\-research](https://www.reddit.com/r/CodexHacks/comments/1vkeara/need_help_with_codex_skills/), 2026\-08\-10; `problem`, `workaround`
+> "it pulled me comment mining skill still same shit level result" - [src\-codexhacks\-poor\-research](https://www.reddit.com/r/codexhacks/comments/1vkeara/need_help_with_codex_skills/), 2026\-08\-10; `problem`, `workaround`
 
-> "someone else skill&\#x27;s that are proven and battel testing" - [src\-codexhacks\-tested\-skill](https://www.reddit.com/r/CodexHacks/comments/1vkeara/comment/p2tdxub/), 2026\-08\-10; `desired\_outcome`, `constraint`
+> "someone else skill&\#x27;s that are proven and battel testing" - [src\-codexhacks\-tested\-skill](https://www.reddit.com/r/codexhacks/comments/1vkeara/comment/p2tdxub/), 2026\-08\-10; `desired\_outcome`, `constraint`
 
 ### Counterevidence
 
 > "Overall though it is working well as a research assistant" - [src\-codex\-existing\-workflow](https://www.reddit.com/r/codex/comments/1sqk7xj/comment/ohaa01a/), 2026\-04\-20; `satisfaction`, `adoption`
+
+### Willingness to pay
+
+**Computed WTP status:** `none`; basis `none`; 0 observed author keys across 0 threads.
+
+No eligible cited purchase-intent or observed-payment source is present.
 
 ### What could falsify or reframe this
 
@@ -57,7 +65,7 @@ Input fingerprint: `sha256:d2f965d0d5837c36405ddceaa2607f25f5f68de76c3f27a2a5d28
 
 **Decision relevance:** The research skill should include concrete data contracts and an executable audit rather than prose alone\.
 
-**Evidence ceiling:** `anecdotal` from 5 distinct observed author keys across 1 threads and 1 communities. Score 62.5/100 within this sample.
+**Declared evidence label:** `anecdotal`. **Computed ceiling:** `anecdotal` from 5 distinct observed author keys across 1 threads and 1 communities. Score 62.5/100 within this sample.
 
 **Countersearch:** `complete`; counterevidence `none_found_in_coverage`. **Costly behavior observed:** adoption.
 
@@ -77,11 +85,21 @@ Input fingerprint: `sha256:d2f965d0d5837c36405ddceaa2607f25f5f68de76c3f27a2a5d28
 
 No counterexample was found in the searched coverage; this does not mean none exists.
 
+### Willingness to pay
+
+**Computed WTP status:** `none`; basis `none`; 0 observed author keys across 0 threads.
+
+No eligible cited purchase-intent or observed-payment source is present.
+
 ### What could falsify or reframe this
 
 - The discussion comes from one thread and may reflect a local norm rather than a recurring cross\-thread need\.
 - Users may prefer short reminder\-style skills when the task is simple\.
 - Evidence needed: Independent threads or controlled comparisons showing generic persona skills are equally consistent and testable\.
+
+## Duplicate and repost groups
+
+No multi-source duplicate or repost groups were collapsed.
 
 ## Scope, search coverage, and limitations
 
@@ -116,9 +134,9 @@ No counterexample was found in the searched coverage; this does not mean none ex
 
 ## Interpretation and next action
 
-- Cited observation (`src\-codex\-research\-post`, `src\-codex\-underwhelming`, `src\-codexhacks\-poor\-research`, `src\-codexhacks\-tested\-skill`): Users explicitly ask for stronger research skills, specialized depth, verified sources, and proven workflows\.
-- Cited observation (`src\-skills\-post`, `src\-skills\-repeatability`, `src\-skills\-schema`, `src\-skills\-testing`, `src\-skills\-benchmarks`): A separate skill\-quality thread calls for repeatability, schemas, objective evaluation, and benchmarks rather than generic expertise personas\.
-- Cited observation (`src\-codex\-existing\-workflow`): One reported custom Codex research system works well, showing the job can be solved without this particular packaged skill\.
+- Cited source excerpt (`src\-codex\-research\-post`): Is there a researcher skill people here use with Codex?
+- Cited source excerpt (`src\-skills\-post`): The whole point of a skill is to fix something Claude consistently gets wrong\.
+- Cited source excerpt (`src\-codex\-existing\-workflow`): Overall though it is working well as a research assistant
 - Researcher inference (`sig\-auditable\-research`, `sig\-procedural\-skill\-quality`): The defensible product wedge is auditability and community\-evidence integrity, implemented as a testable procedure rather than generic deep\-research prose\.
 
 **Recommendation (`sig\-auditable\-research`, `sig\-procedural\-skill\-quality`):** Build and publish a portable, local\-first skill with deterministic provenance, independence, WTP, counterevidence, and coverage gates, then evaluate it against a no\-skill baseline\.

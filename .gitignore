@@ -2,6 +2,10 @@ __pycache__/
 *.py[cod]
 .author-key
 **/.author-key
+.csr-build.lock
+**/.csr-build.lock
+.csr-*.tmp
+**/.csr-*.tmp
 .tmp-*/
 .csr-artifacts-stage-*/
 .csr-artifacts-backup-*/

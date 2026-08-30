@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -82,7 +83,7 @@ def make_bundle(*, support_count: int = 8, include_counter: bool = True) -> dict
             "intent": "counter",
             "run_at": "2026-08-30T09:30:00Z",
             "sort": "relevance",
-            "results_seen": 5,
+            "results_seen": 5 if include_counter else 0,
             "results_screened": 1 if include_counter else 0,
             "pages_seen": 1,
             "truncated": False,
@@ -153,7 +154,7 @@ def make_bundle(*, support_count: int = 8, include_counter: bool = True) -> dict
         "schema_version": "1.0",
         "observations": [
             {
-                "text": "Participants describe source-verification failures.",
+                "text": sources[0]["excerpt"] if sources else sources[-1]["excerpt"],
                 "source_ids": [support_ids[0]] if support_ids else counter_ids,
             }
         ],
@@ -258,6 +259,32 @@ def set_reddit_thread(item: dict[str, Any], post_id: str) -> None:
 
 def query(bundle: dict[str, Any], query_id: str) -> dict[str, Any]:
     return next(item for item in bundle["queries"] if item["id"] == query_id)
+
+
+def move_source_to_platform_query(bundle: dict[str, Any], source_id: str, platform: str) -> str:
+    """Move one fixture source to a dedicated same-platform query execution."""
+    item = source(bundle, source_id)
+    for existing in bundle["queries"]:
+        if source_id in existing["included_source_ids"]:
+            existing["included_source_ids"] = [
+                included for included in existing["included_source_ids"] if included != source_id
+            ]
+    query_id = f"qry-{re.sub(r'[^a-z0-9]+', '-', platform.casefold()).strip('-')}-fixture"
+    dedicated = copy.deepcopy(bundle["queries"][0])
+    dedicated.update(
+        {
+            "id": query_id,
+            "platform": platform,
+            "query": f"fixture query for {platform}",
+            "results_seen": 1,
+            "results_screened": 1,
+            "pages_seen": 1,
+            "included_source_ids": [source_id],
+        }
+    )
+    bundle["queries"].append(dedicated)
+    item["query_ids"] = [query_id]
+    return query_id
 
 
 def select_signal_sources(

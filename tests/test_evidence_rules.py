@@ -97,6 +97,16 @@ class EvidenceThresholdTests(StudyCase):
         report = self.analyze()
         self.assertIn("OVERCLAIMED_LEVEL", issue_codes(report, "error"))
 
+    def test_deliberate_underclaim_governs_public_label_and_ceiling_stays_visible(self) -> None:
+        signal(self.bundle)["claimed_level"] = "anecdotal"
+        write_bundle(self.study, self.bundle)
+        report, context = csr.analyze(self.study)
+        self.assertNotEqual("fail", report["status"], report["issues"])
+        rendered = csr.render_findings(report, context)
+        self.assertIn("| Declared label | Computed ceiling |", rendered)
+        self.assertIn("**Declared evidence label:** `anecdotal`", rendered)
+        self.assertIn("**Computed ceiling:** `well-corroborated`", rendered)
+
     def test_zero_eligible_support_is_unsupported(self) -> None:
         select_signal_sources(self.bundle, [], ["src-900"])
         signal(self.bundle)["claimed_level"] = "unsupported"
@@ -104,6 +114,22 @@ class EvidenceThresholdTests(StudyCase):
         self.assertEqual(0, metric["support_groups"])
         self.assertEqual("unsupported", metric["calculated_level"])
         self.assertEqual(0.0, metric["evidence_score"])
+
+    def test_unknown_authors_remain_visible_but_add_no_positive_evidence(self) -> None:
+        for item in self.bundle["sources"]:
+            if item["stance"] == "support":
+                item["author_key"] = "unknown"
+        signal(self.bundle)["claimed_level"] = "unsupported"
+        report = self.analyze()
+        self.assertNotEqual("fail", report["status"], report["issues"])
+        metric = report["signals"][0]
+        self.assertEqual("unsupported", metric["calculated_level"])
+        self.assertEqual(0.0, metric["evidence_score"])
+        self.assertEqual(0, metric["support_groups"])
+        self.assertEqual(8, metric["ineligible_support_groups"])
+        self.assertEqual(0, metric["distinct_author_keys"])
+        self.assertEqual(0, metric["distinct_threads"])
+        self.assertEqual("none", metric["wtp_status"])
 
     def test_viral_engagement_never_changes_score_or_level(self) -> None:
         for index in range(1, 9):
@@ -157,7 +183,10 @@ class DuplicateAndRepostTests(StudyCase):
         signal(self.bundle)["claimed_level"] = "well-corroborated"
         report = self.analyze()
         self.assertEqual("pass", report["status"], report["issues"])
-        self.assertEqual(8, report["counts"]["duplicate_groups"])
+        self.assertEqual(8, report["counts"]["source_groups_after_collapse"])
+        self.assertEqual(1, report["counts"]["collapsed_duplicate_groups"])
+        self.assertEqual(["explicit_repost"], report["duplicate_groups"][0]["collapse_reasons"])
+        self.assertEqual(["src-001", "src-002"], report["duplicate_groups"][0]["member_source_ids"])
         self.assertEqual(7, report["signals"][0]["support_groups"])
 
     def test_exact_long_text_collapses_independent_urls(self) -> None:
@@ -166,6 +195,7 @@ class DuplicateAndRepostTests(StudyCase):
         source(self.bundle, "src-001")["excerpt"] = " ".join(shared.split()[:5])
         source(self.bundle, "src-002")["captured_text"] = shared
         source(self.bundle, "src-002")["excerpt"] = " ".join(shared.split()[:5])
+        self.bundle["notes"]["observations"][0]["text"] = source(self.bundle, "src-001")["excerpt"]
         select_signal_sources(
             self.bundle,
             ["src-001", "src-003", "src-004", "src-005", "src-006", "src-007", "src-008"],
@@ -173,7 +203,8 @@ class DuplicateAndRepostTests(StudyCase):
         )
         report = self.analyze()
         self.assertNotEqual("fail", report["status"], report["issues"])
-        self.assertEqual(8, report["counts"]["duplicate_groups"])
+        self.assertEqual(8, report["counts"]["source_groups_after_collapse"])
+        self.assertIn("exact_captured_text", report["duplicate_groups"][0]["collapse_reasons"])
 
     def test_same_source_review_collapses_pair(self) -> None:
         source(self.bundle, "src-002")["duplicate_reviews"] = [
@@ -189,7 +220,8 @@ class DuplicateAndRepostTests(StudyCase):
             ["src-900"],
         )
         report = self.analyze()
-        self.assertEqual(8, report["counts"]["duplicate_groups"])
+        self.assertEqual(8, report["counts"]["source_groups_after_collapse"])
+        self.assertIn("reviewed_same_source", report["duplicate_groups"][0]["collapse_reasons"])
 
     def test_repost_cycle_is_rejected(self) -> None:
         source(self.bundle, "src-001")["repost_of"] = "src-002"
@@ -202,6 +234,15 @@ class DuplicateAndRepostTests(StudyCase):
         source(self.bundle, "src-003")["repost_of"] = "src-002"
         report = self.analyze()
         self.assertIn("REPOST_CHAIN", issue_codes(report, "error"))
+
+    def test_repost_cannot_predate_declared_origin(self) -> None:
+        origin = source(self.bundle, "src-001")
+        repost = source(self.bundle, "src-002")
+        origin["published_at"] = "2026-08-29T12:00:00Z"
+        repost["published_at"] = "2026-08-28T12:00:00Z"
+        repost["repost_of"] = "src-001"
+        report = self.analyze()
+        self.assertIn("REPOST_TIME_ORDER", issue_codes(report, "error"))
 
     def test_missing_repost_target_is_rejected(self) -> None:
         source(self.bundle, "src-002")["repost_of"] = "src-missing"
@@ -223,7 +264,7 @@ class DuplicateAndRepostTests(StudyCase):
         report = self.analyze()
         self.assertIn("CONFLICTING_DUPLICATE_REVIEW", issue_codes(report, "error"))
 
-    def test_canonical_url_metadata_conflict_is_rejected(self) -> None:
+    def test_generic_public_ids_must_equal_their_canonical_urls(self) -> None:
         self.bundle["plan"]["scope"]["platforms"].append("forum")
         self.bundle["plan"]["scope"]["communities"].append("forum.example")
         for source_id in ("src-001", "src-002"):
@@ -236,7 +277,7 @@ class DuplicateAndRepostTests(StudyCase):
         source(self.bundle, "src-001")["unit_id"] = "forum:unit-one"
         source(self.bundle, "src-002")["unit_id"] = "forum:unit-two"
         report = self.analyze()
-        self.assertIn("DUPLICATE_METADATA_CONFLICT", issue_codes(report, "error"))
+        self.assertIn("PUBLIC_ID_MISMATCH", issue_codes(report, "error"))
 
 
 class WillingnessToPayTests(StudyCase):
@@ -247,6 +288,25 @@ class WillingnessToPayTests(StudyCase):
         metric = self.metric()
         self.assertEqual("anecdotal", metric["wtp_status"])
         self.assertEqual("purchase_intent", metric["wtp_evidence"])
+
+    def test_public_wtp_section_is_generated_from_exact_citations_not_analyst_prose(self) -> None:
+        source(self.bundle, "src-001")["evidence_types"] = ["purchase_intent"]
+        signal(self.bundle)["wtp_statement"] = "Every user will pay any price."
+        signal(self.bundle)["wtp_citations"] = ["src-001"]
+        write_bundle(self.study, self.bundle)
+        report, context = csr.analyze(self.study)
+        self.assertNotEqual("fail", report["status"], report["issues"])
+        rendered = csr.render_findings(report, context)
+        self.assertIn("**Computed WTP status:** `anecdotal`; basis `purchase_intent`", rendered)
+        self.assertIn(r"[src\-001]", rendered)
+        self.assertNotIn("Every user will pay any price", rendered)
+        self.assertNotIn("Willingness-to-pay observation", rendered)
+
+    def test_uncited_economic_tag_does_not_create_public_wtp_status(self) -> None:
+        source(self.bundle, "src-001")["evidence_types"] = ["purchase_intent"]
+        metric = self.metric()
+        self.assertEqual("none", metric["wtp_status"])
+        self.assertEqual([], metric["wtp_source_ids"])
 
     def test_recurring_wtp_requires_three_authors_and_two_threads(self) -> None:
         for source_id in ("src-001", "src-002", "src-003"):
@@ -293,6 +353,16 @@ class WillingnessToPayTests(StudyCase):
         codes = issue_codes(report, "error")
         self.assertIn("WTP_NOT_SUPPORT", codes)
         self.assertIn("UNSUPPORTED_WTP", codes)
+
+    def test_unknown_author_cannot_support_willingness_to_pay(self) -> None:
+        item = source(self.bundle, "src-001")
+        item["author_key"] = "unknown"
+        item["evidence_types"] = ["purchase_intent"]
+        signal(self.bundle)["wtp_statement"] = "One source explicitly states purchase intent."
+        signal(self.bundle)["wtp_citations"] = ["src-001"]
+        report = self.analyze()
+        self.assertIn("UNSUPPORTED_WTP", issue_codes(report, "error"))
+        self.assertEqual("none", report["signals"][0]["wtp_status"])
 
 
 class CounterevidenceTests(StudyCase):
@@ -380,6 +450,15 @@ class QuoteAndLinkIntegrityTests(StudyCase):
         codes = issue_codes(report, "error")
         self.assertIn("BAD_SOURCE_REF", codes)
         self.assertIn("BAD_SIGNAL_REF", codes)
+
+    def test_rendered_observation_must_equal_one_literal_public_excerpt(self) -> None:
+        observation = self.bundle["notes"]["observations"][0]
+        observation["text"] = "A persuasive but uncaptured source claim."
+        observation["source_ids"] = ["src-001", "src-002"]
+        report = self.analyze()
+        codes = issue_codes(report, "error")
+        self.assertIn("OBSERVATION_SOURCE_COUNT", codes)
+        self.assertIn("OBSERVATION_NOT_LITERAL", codes)
 
 
 if __name__ == "__main__":

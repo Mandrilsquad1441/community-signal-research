@@ -28,7 +28,7 @@ Use several query families for each suspected job or pain:
 | Purchase | Find explicit economic behavior | “paid”, “budget”, “would buy”, “price” |
 | Counter | Try to disconfirm the thesis | “already solved”, “not useful”, “overkill”, alternative names |
 
-Log query variants that return nothing. Do not silently drop weak channels or queries.
+Log query variants that return nothing. Every row records at least one viewed result page, and a row that saw results records at least one screened result. Do not duplicate one execution under multiple IDs or intents; intent labels classify the run but do not create another execution. Do not silently drop weak channels or queries.
 
 ## 3. Screen consistently
 
@@ -48,17 +48,19 @@ Capture one observed-account unit per ledger record. For a comment, store that c
 
 The excerpt must be a literal, short substring of `captured_text` within both the 25-word and 500-character ceilings. Paraphrases belong in the hypothesis, not the excerpt. Store engagement only as timestamped context; the scoring algorithm ignores it.
 
-Pseudonymize account handles with the study's private HMAC key. Never publish `.author-key`. Use `unknown` for deleted or unavailable accounts; unknown records never add distinct-author count. A pseudonymous key does not prove a unique person and public links may still reveal account names.
+Pseudonymize account handles with the study's private HMAC key and the observed platform (`author-key --study-dir <study> --platform <platform>`). The platform namespace prevents an equal spelling from producing the same key across platforms. Never publish `.author-key`. Use `unknown` for deleted or unavailable accounts; unknown records never add distinct-author count. A pseudonymous key does not prove a unique person and public links may still reveal account names.
+
+Use a direct canonical permalink with no credential, session, signature, or personal-data material. The helper rejects credential keys across query, fragment, and path-matrix syntax, including compact/camel spellings such as `privateKey`, `secretKey`, `signingKey`, and `keyPairId`, and rejects the apex or descendants of `home.arpa`, `internal`, `lan`, `local`, `localdomain`, and `localhost`. It normalizes RFC dot segments, unreserved percent escapes, raw UTF-8 path/query/fragment bytes, hosts, and default ports. It preserves generic-server repeated/trailing slashes and query order, so do not simplify those by hand. Native Reddit, exact-host `github.com`, and Hacker News identities come from their canonical URLs and reject nondefault ports; GitHub subdomains and other generic sources use exact canonical unit/thread URLs on one host and port.
 
 ## 5. Collapse dependent evidence
 
-Link copies with `repost_of`. Also consider two sources dependent when they repeat substantively identical text, quote the same underlying source, or are cross-posts of one submission. The audit collapses hard identity matches and reports fuzzy candidates. Resolve each fuzzy candidate with a documented `same_source` or `independent` duplicate review.
+Link copies with `repost_of`. Also consider two sources dependent when they repeat substantively identical text, quote the same underlying source, or are cross-posts of one submission. The audit auto-collapses exact normalized text only at 80 characters **and** 12 words, both inclusive. Equal text meeting 20 characters **and** 4 words but failing either hard condition warns for review rather than auto-merging boilerplate. All hard/transitive unions finish before short-exact review. An already joined match does not warn, while `independent` resolves only its pair and is not transitive. The auditor emits one deterministic unresolved pair per short-text class per run; document it and rerun until no pair remains. Fuzzy candidates likewise warn. Resolve each warning with a documented `same_source` or `independent` duplicate review.
 
 A duplicate group counts once for source, author, and thread recurrence. Leave all records in the ledger so the collapse is auditable.
 
 ## 6. Separate observation, inference, and decision
 
-- Observation: what a source explicitly says or does.
+- Observation: exactly one short literal public-source excerpt, bound to that source alone.
 - Inference: a falsifiable interpretation across observations.
 - Decision: what to build, test, or investigate next.
 
@@ -66,11 +68,11 @@ The generated report keeps those layers separate. A “recurring” label descri
 
 ## 7. Seek disconfirmation
 
-Run at least one query designed to find adequate existing solutions, lack of interest, implementation objections, or a competing explanation. Record counter sources in each affected signal. If no counterexample appears, say “none found in the searched coverage,” never “none exists.”
+Run at least one query designed to find adequate existing solutions, lack of interest, implementation objections, or a competing explanation. Record counter sources in each affected signal. Only a viewed, properly screened, non-truncated counter execution can support complete countersearch. If no counterexample appears, say “none found in the searched coverage,” never “none exists.”
 
 ## 8. Stop deliberately
 
-Stop when the effective coverage floor is met, new sources repeat existing mechanisms, the decision is clear at the supported evidence ceiling, or access/time limits are reached. Report which stop condition applied. Do not keep collecting merely to inflate counts.
+Stop when the effective coverage floor is met, new sources repeat existing mechanisms, the decision is clear at the supported evidence ceiling, or access/time limits are reached. Replace the initialization recommendation and stop-reason placeholders with the evidence-bound conclusion and actual stopping rationale, and record at least one next test. Do not keep collecting merely to inflate counts.
 
 ## Research ethics and safety
 

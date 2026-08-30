@@ -27,14 +27,14 @@ This skill makes those shortcuts visible:
 
 - **Atomic source ledger:** one observed post, comment, issue, discussion entry, story, review, or export record per JSONL row.
 - **Literal quote binding:** every excerpt must occur in the captured source text and may contain at most 25 words and 500 characters.
-- **Dependency-aware counting:** canonical URLs, repost links, exact duplicates, and reviewed fuzzy matches collapse before recurrence is measured.
+- **Dependency-aware counting:** canonical URLs, native platform identities, repost links, reviewed matches, and substantive exact copies collapse before recurrence is measured. Short exact boilerplate is review-gated instead of silently merged, and every collapsed group remains visible.
 - **Conservative recurrence:** `recurring` requires at least three eligible observed author keys across at least two threads.
 - **Promotion quarantine:** promotional and unclear sources stay visible but cannot establish positive demand.
-- **Explicit WTP gate:** willingness to pay requires cited buying, payment, budget, price, or purchase-intent language.
+- **Explicit WTP gate:** willingness to pay is computed only from dedicated citations containing buying, payment, budget, price, or purchase-intent language; researcher prose cannot override it.
 - **Counterevidence by construction:** every signal must be targeted by a counter-oriented query.
 - **Coverage disclosure:** communities, platforms, dates, truncation, concentration, exclusions, and unmet targets remain in the report.
 - **Deterministic artifacts:** a fresh audit byte-compares generated outputs against the five inputs.
-- **Privacy-aware provenance:** study-local HMAC keys replace raw handles; private-export excerpts are withheld while opaque locators and authorized-file hashes remain auditable.
+- **Privacy-aware provenance:** platform-namespaced, study-local HMAC keys replace raw handles; private-export excerpts are withheld while opaque locators and caller-declared source-file hashes remain traceable; a bounded output-flow scan blocks obvious contact-data and private-token overlap.
 
 The helper performs no network calls and launches no subprocesses. Your agent or approved research tool collects evidence; the helper validates and renders it.
 
@@ -79,7 +79,7 @@ mkdir -p "/absolute/path/to/project/.agents/skills"
 git clone https://github.com/Mandrilsquad1441/community-signal-research.git "/absolute/path/to/project/.agents/skills/community-signal-research"
 ```
 
-Codex also discovers personal skills under `$CODEX_HOME/skills`, or `~/.codex/skills` when `CODEX_HOME` is unset. Invoke it explicitly when desired:
+Codex discovers personal skills under `$HOME/.agents/skills`. Invoke it explicitly when desired:
 
 ```text
 Use $community-signal-research to compare recurring complaints about local-first CRM tools and recommend the next problem to validate.
@@ -138,20 +138,26 @@ signal-catalog.json
 research-notes.json
 ```
 
-It also creates a private `.author-key` secret. Use it to pseudonymize a public handle without writing that handle to the ledger:
+It also creates a private `.author-key` secret. Before writing inputs or the secret, `init` appends a final protective block containing `.author-key`, `.csr-build.lock`, `.csr-*.tmp`, `.csr-artifacts-stage-*/`, and `.csr-artifacts-backup-*/` to the study-local `.gitignore`. Appending all five rules at the end overrides earlier negations under Git's last-match-wins behavior; initialization refuses an existing or resulting ignore file above 1 MiB. Use the secret to pseudonymize a public handle without writing that handle to the ledger:
 
 ```powershell
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-"raw-handle" | python "C:\absolute\path\to\community-signal-research\scripts\community_signal.py" author-key --study-dir "C:\absolute\path\to\my-study"
+"raw-handle" | python "C:\absolute\path\to\community-signal-research\scripts\community_signal.py" author-key --study-dir "C:\absolute\path\to\my-study" --platform reddit
 ```
 
 On a POSIX shell:
 
 ```bash
-printf '%s' 'raw-handle' | python3 "/absolute/path/to/community-signal-research/scripts/community_signal.py" author-key --study-dir "/absolute/path/to/my-study"
+printf '%s' 'raw-handle' | python3 "/absolute/path/to/community-signal-research/scripts/community_signal.py" author-key --study-dir "/absolute/path/to/my-study" --platform reddit
 ```
 
-The command expects UTF-8 standard input and normalizes Unicode before hashing. Use PowerShell 7+ or set `$OutputEncoding` as shown before piping non-ASCII handles from Windows PowerShell. Never commit or publish `.author-key`. Read [`references/method.md`](references/method.md) for the research method, [`references/source-playbooks.md`](references/source-playbooks.md) for collection guidance, and [`references/data-contracts.md`](references/data-contracts.md) for exact schemas.
+The command expects at most 4,096 bytes of UTF-8 standard input and normalizes both handle and platform before a platform-namespaced HMAC. The same handle on two platforms therefore receives different study-local keys. Use PowerShell 7+ or set `$OutputEncoding` as shown before piping non-ASCII handles from Windows PowerShell. Never commit or publish `.author-key`.
+
+Every query row must record at least one viewed result page. A row with results must show that at least one result was screened. Query/source links are reciprocal and must agree on normalized platform; a source cannot have been published after the linked query ran. Duplicate rows with the same normalized platform, query, UTC run time, and sort are rejected even if their declared intents differ. Only a qualifying, non-truncated counterquery can support `complete` countersearch.
+
+The initialized recommendation and stop-reason text are deliberate placeholders, and `next_tests` starts empty. Validation fails until they are replaced with an evidence-bound conclusion, an actual stopping rationale, and at least one next test—even when no signal qualifies.
+
+Read [`references/method.md`](references/method.md) for the research method, [`references/source-playbooks.md`](references/source-playbooks.md) for collection guidance, and [`references/data-contracts.md`](references/data-contracts.md) for exact schemas.
 
 ### 3. Build and audit
 
@@ -168,25 +174,33 @@ artifacts/signals.csv
 artifacts/findings.md
 ```
 
-`audit --strict` recomputes the analysis and byte-compares all three artifacts. If the audit fails, repair the inputs or lower the claim—do not hand-edit generated outputs.
+`audit --strict` recomputes the analysis, requires the exact three-entry artifact set, and byte-compares all three artifacts. `build` refuses symlink, Windows-junction, and other reparse-point paths and boundedly reconciles only validated, tool-shaped interrupted transactions. `build` holds a persistent, nonblocking cross-process study lock across recovery, analysis, staging, installation, and cleanup; standalone recovery uses the same lock. A second writer fails fast without touching the active transaction. If the audit fails, repair the inputs or lower the claim—do not hand-edit generated outputs.
 
 ## What the audit proves
 
 The offline audit can prove that:
 
 - the local JSON/JSONL inputs match the declared schemas;
-- IDs, reciprocal references, dates, URLs, citations, and duplicate links are internally consistent;
+- each input is read through one regular-file descriptor with path/descriptor identity checks before and after a bounded 10 MiB-plus-one-byte read; growth, replacement, link/reparse substitution, or in-read metadata change is refused. General schema strings and JSON object keys are capped at 20,000 characters before downstream semantic normalization or parsing, with a separate 100,000-character `captured_text` cap. Dates must be `YYYY-MM-DD`; timestamps must be `YYYY-MM-DDTHH:MM:SS[.1-6 digits](Z|±HH:MM)`. Date/timestamp lexemes are capped at 10/64 characters; over-limit string/key and invalid date/timestamp payloads are never echoed;
+- shared text normalization is runtime-independent: the helper pins Unicode 3.2 NFKC, a fixed whitespace table, and ASCII `A`–`Z` case mapping. Characters added after Unicode 3.2 remain literal and non-ASCII case variants are not silently merged, preventing Python's changing Unicode database from changing artifacts across supported versions;
+- IDs, reciprocal references, dates, URLs, citations, and duplicate links are internally consistent; query/source platform and publication chronology agree, and duplicate query executions are rejected;
+- URL dot segments, unreserved percent escapes, raw UTF-8, host case/trailing dots, IP-literal spelling, and default ports are normalized; credential-like parameter keys—including compact/camel forms such as `token`, `session`, `privateKey`, `secretKey`, `signingKey`, and `keyPairId`—obvious contact data, malformed path/generic-component escapes, raw-Unicode hosts, and nonpublic host apexes/suffixes are rejected. Literal addresses use a project-pinned special-use CIDR policy rather than version-varying Python classifications. Generic URLs preserve server-significant repeated/trailing slashes and query order, while native community hosts reject nondefault ports;
+- Reddit, exact-host `github.com`, and Hacker News unit/thread identities—including normalized positive native IDs—are derived from permalinks rather than submitted IDs. GitHub subdomains and other generic public sources use their exact canonical URLs as IDs, and platform diversity comes from canonical host families rather than arbitrary labels;
 - excerpts are short literal substrings of captured text, with word and character ceilings;
 - positive counts exclude promotion, unknown authors, and collapsed duplicates;
+- every observation's ledger value equals one public source excerpt exactly, while cross-source synthesis stays in explicitly labeled inferences; Markdown display escapes syntax and normalizes compatibility characters and whitespace;
 - recurrence and WTP labels do not exceed the encoded evidence;
 - coverage and counterquery requirements are visible;
-- generated artifacts reproduce deterministically from the five inputs under the documented private-text fingerprint boundary.
+- duplicate/repost group members and collapse reasons are visible; after every hard/transitive union, each unresolved short-text class yields one deterministic pair warning per run. `independent` is pair-specific, not transitive, so rerun after each review until every final-group pair is resolved;
+- supplied-private rows use the `export` platform, null URLs, opaque record references, and caller-declared file hashes; repeated exact provenance pairs compare normalized community/language, UTC-equivalent `published_at`, and order-independent evidence types before declaring a conflict. Output-bearing fields receive bounded, ASCII-shaped email/phone checks with explicit runtime-independent boundaries, while identifiers and public URLs are also checked for hashed private-token overlap;
+- generated artifacts reproduce deterministically from the five inputs under the documented private-text fingerprint boundary and pinned normalization policy, with each 32 MiB UTF-8 ceiling enforced incrementally while CSV, Markdown, or JSON is rendered.
 
-For supplied-private records, the public fingerprint deliberately redacts free text and commits to the authorized file hash plus structured provenance instead. This prevents a low-entropy response from becoming a public dictionary oracle; changing only redacted private prose does not change the public fingerprint.
+The public fingerprint deliberately redacts title/text/excerpt/notes for every ledger row whose visibility is not exactly `public`, including malformed or missing intended-private visibility. For a valid supplied-private row, it remains bound to the caller-declared file hash plus structured provenance instead. This prevents the fingerprint itself from becoming a low-entropy dictionary oracle; changing only redacted prose does not change the public fingerprint. The separate output-flow scan is a bounded heuristic, not a general data-loss-prevention system: it can have false positives or miss paraphrases, encodings, or identifiers outside its patterns. Review public artifacts before publishing them.
 
 It cannot prove that:
 
 - a remote page was captured faithfully or still exists;
+- a caller-declared private source-file hash matches the underlying export;
 - two accounts are two people;
 - an agent classified a passage semantically correctly;
 - the search was exhaustive or free from ranking bias;
@@ -197,7 +211,7 @@ Recheck consequential remote evidence and use interviews, experiments, analytics
 
 ## Evidence levels and ranking
 
-Signals are labeled `unsupported`, `anecdotal`, `recurring`, or `well-corroborated`. The deterministic evidence score ranks hypotheses **inside the collected sample** using source independence, costly behavior, source diversity, recency, counterevidence, coverage, and risk penalties. It ignores engagement counts.
+Signals are declared `unsupported`, `anecdotal`, `recurring`, or `well-corroborated`. The audit rejects a declaration above the computed ceiling and the public report shows both values, so a deliberate underclaim remains the declared conclusion. A fully executed negative/null study whose signals are all declared `unsupported` can strict-pass without a no-support warning; it still receives the lower coverage score and supports only “none found in the searched coverage,” never proof of absence. Any positive-level claim without eligible support remains gated. The deterministic evidence score ranks hypotheses **inside the collected sample** using source independence, costly behavior, source diversity, recency, counterevidence, coverage, and risk penalties. It ignores engagement counts.
 
 Read [`references/scoring.md`](references/scoring.md) before interpreting a ranking. A higher score does not mean a larger market.
 
@@ -228,11 +242,24 @@ The release gate includes deterministic regression tests, static skill validatio
 
 <!-- EVALUATION_RESULTS_PLACEHOLDER: replace this note with links and exact committed results after the evaluation suite is merged and rerun. -->
 
-The helper itself is dependency-free, so the expected local regression command is:
+Run the deterministic local gate from the repository root:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m py_compile scripts/community_signal.py
+python -B -m unittest discover -s tests -p "test_*.py" -v
+python -B -m unittest discover -s evals/tests -v
+python -B evals/harness.py verify
+python .github/scripts/smoke_cli.py
+python scripts/community_signal.py audit examples/agent-skill-demand --strict --json
 ```
+
+With an installed, authenticated Codex CLI, also preflight the frozen trial operator before a release run:
+
+```bash
+python evals/run_trials.py preflight --model gpt-5.4-mini --reasoning low
+```
+
+The core helper, regression tests, and deterministic harness verification make no network calls. Operator preflight and the forward behavioral evaluation use the Codex service and are not offline tests. See [`evals/README.md`](evals/README.md) for the committed-run protocol.
 
 ## Contributing
 
