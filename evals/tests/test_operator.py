@@ -97,6 +97,7 @@ class OperatorTests(unittest.TestCase):
         disabled = {argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--disable"}
         self.assertEqual(set(operator.DISABLED_FEATURES), disabled)
         self.assertIn('model_reasoning_effort="low"', argv)
+        self.assertIn("suppress_unstable_features_warning=true", argv)
         self.assertEqual(str(trial), argv[argv.index("--cd") + 1])
         self.assertEqual(
             str(trial / "response.schema.json"),
@@ -104,6 +105,160 @@ class OperatorTests(unittest.TestCase):
         )
         self.assertEqual(str(response), argv[argv.index("--output-last-message") + 1])
         self.assertNotIn("response.json", argv)
+
+    def test_frozen_response_schema_uses_the_strict_structured_output_subset(self) -> None:
+        allowed_keywords = {
+            "type",
+            "properties",
+            "required",
+            "additionalProperties",
+            "items",
+            "enum",
+        }
+
+        def validate_node(node: object, path: str) -> None:
+            self.assertIsInstance(node, dict, path)
+            self.assertLessEqual(set(node), allowed_keywords, path)
+            self.assertIn("type", node, path)
+            node_type = node["type"]
+            if node_type == "object":
+                properties = node.get("properties")
+                self.assertIsInstance(properties, dict, path)
+                self.assertEqual(set(properties), set(node.get("required", [])), path)
+                self.assertIs(node.get("additionalProperties"), False, path)
+                for name, child in properties.items():
+                    validate_node(child, f"{path}.{name}")
+            elif node_type == "array":
+                validate_node(node.get("items"), f"{path}[]")
+            elif isinstance(node_type, list):
+                self.assertEqual({"null", "string"}, set(node_type), path)
+            else:
+                self.assertIn(node_type, {"integer", "string"}, path)
+
+        validate_node(operator.load_json(operator.RESPONSE_SCHEMA_PATH), "response")
+
+    def test_smoke_uses_the_exact_frozen_schema_and_requires_the_exact_object(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            out_dir = Path(temporary) / "smoke"
+
+            def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                response_path = Path(argv[argv.index("--output-last-message") + 1])
+                response_path.write_text(
+                    json.dumps(operator.SMOKE_EXPECTED_RESPONSE, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                out_dir=out_dir,
+                codex="codex",
+                model="gpt-5.4-mini",
+                reasoning="low",
+                timeout_seconds=30,
+            )
+            identity = {
+                "requested_command": "codex",
+                "resolved_path": "codex",
+                "binary_sha256": "a" * 64,
+                "version_output": "test",
+            }
+            catalog = {"supported_reasoning_levels": ["low"]}
+            with (
+                mock.patch.object(operator, "executable_identity", return_value=identity),
+                mock.patch.object(operator, "model_catalog_entry", return_value=(catalog, "b" * 64)),
+                mock.patch.object(operator.subprocess, "run", side_effect=fake_run),
+            ):
+                record = operator.smoke_test(args)
+
+            self.assertEqual(
+                operator.RESPONSE_SCHEMA_PATH.read_bytes(),
+                (out_dir / "response.schema.json").read_bytes(),
+            )
+            self.assertTrue(record["response_matches_expected"])
+            self.assertIsNone(record["response_validation_error"])
+
+    def test_smoke_preserves_and_rejects_a_nonmatching_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            out_dir = Path(temporary) / "smoke"
+
+            def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                response_path = Path(argv[argv.index("--output-last-message") + 1])
+                response_path.write_text('{"schema_version":"1.0"}\n', encoding="utf-8")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+            args = argparse.Namespace(
+                out_dir=out_dir,
+                codex="codex",
+                model="gpt-5.4-mini",
+                reasoning="low",
+                timeout_seconds=30,
+            )
+            identity = {
+                "requested_command": "codex",
+                "resolved_path": "codex",
+                "binary_sha256": "a" * 64,
+                "version_output": "test",
+            }
+            catalog = {"supported_reasoning_levels": ["low"]}
+            with (
+                mock.patch.object(operator, "executable_identity", return_value=identity),
+                mock.patch.object(operator, "model_catalog_entry", return_value=(catalog, "b" * 64)),
+                mock.patch.object(operator.subprocess, "run", side_effect=fake_run),
+                self.assertRaisesRegex(ValueError, "Codex smoke failed"),
+            ):
+                operator.smoke_test(args)
+
+            record = json.loads((out_dir / "smoke.json").read_text(encoding="utf-8"))
+            self.assertFalse(record["response_matches_expected"])
+            self.assertTrue((out_dir / "response.raw.txt").is_file())
+
+    def test_smoke_rejects_boolean_and_float_substitutes_for_integer_zero(self) -> None:
+        for label, replacement in (("boolean", False), ("float", 0.0)):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                out_dir = Path(temporary) / "smoke"
+                response = json.loads(json.dumps(operator.SMOKE_EXPECTED_RESPONSE))
+                response["independent_support"]["authors"] = replacement
+
+                def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                    response_path = Path(argv[argv.index("--output-last-message") + 1])
+                    response_path.write_text(
+                        json.dumps(response, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+                args = argparse.Namespace(
+                    out_dir=out_dir,
+                    codex="codex",
+                    model="gpt-5.4-mini",
+                    reasoning="low",
+                    timeout_seconds=30,
+                )
+                identity = {
+                    "requested_command": "codex",
+                    "resolved_path": "codex",
+                    "binary_sha256": "a" * 64,
+                    "version_output": "test",
+                }
+                catalog = {"supported_reasoning_levels": ["low"]}
+                with (
+                    mock.patch.object(operator, "executable_identity", return_value=identity),
+                    mock.patch.object(
+                        operator,
+                        "model_catalog_entry",
+                        return_value=(catalog, "b" * 64),
+                    ),
+                    mock.patch.object(operator.subprocess, "run", side_effect=fake_run),
+                    self.assertRaisesRegex(ValueError, "Codex smoke failed"),
+                ):
+                    operator.smoke_test(args)
+
+                record = json.loads((out_dir / "smoke.json").read_text(encoding="utf-8"))
+                self.assertFalse(record["response_matches_expected"])
+                self.assertEqual(
+                    "response did not equal the requested smoke object",
+                    record["response_validation_error"],
+                )
 
     def test_staging_contains_exactly_allowed_files_and_excludes_source_extras(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

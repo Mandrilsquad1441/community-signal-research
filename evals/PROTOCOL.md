@@ -52,12 +52,14 @@ git rev-parse HEAD
 git status --short
 ```
 
-The second command must emit nothing. Optional preflight and non-evaluation smoke commands are:
+The second command must emit nothing. Required release-run preflight and non-evaluation smoke commands are:
 
 ```text
 python evals/run_trials.py preflight --model <model> --reasoning <effort>
 python evals/run_trials.py smoke --out-dir <new-dir-outside-repo> --model <model> --reasoning <effort>
 ```
+
+The smoke call uses the byte-exact frozen production response schema and the same isolated Codex flags as a trial. It requests one fixed complete object and passes only when the process exits zero and the exact raw JSON value equals that object. A failed smoke directory is preserved and never reused; fix the operator or schema, freeze a new commit, and use a new allocation and smoke path.
 
 Execute the allocation with:
 
@@ -90,7 +92,7 @@ The Codex invocation ignores user configuration and repository rules, skips host
 
 Both conditions use the same executable, model, reasoning effort, low verbosity, sandbox, timeout, and disabled-feature set. The current operator records allocated pair seeds but does not apply them because its recorded CLI exposes no request-seed option. Independent replicates therefore remain necessary.
 
-The only response artifact accepted by the harness is the assistant's exact final-output bytes in `response.raw.txt`. The output must be UTF-8 containing exactly one JSON object that satisfies `response.schema.json`, without a Markdown fence or surrounding prose. Do not create or substitute `response.json`; the harness ignores it. Do not extract, trim into a different file, repair, follow up, retry, or select a better answer. Missing, non-UTF-8, fenced, schema-invalid, refused, timed-out, or malformed output is the observed result.
+The only response artifact accepted by the harness is the assistant's exact final-output bytes in `response.raw.txt`. The output must be UTF-8 containing exactly one JSON object that satisfies `response.schema.json`, without a Markdown fence or surrounding prose. The provider-facing schema is deliberately restricted to required object shapes, explicit scalar/nullable types, and enums supported by strict Structured Outputs. Independent deterministic validation enforces the full regex, length, cardinality, uniqueness, cross-field, citation, and packet-identity rules before scoring. Do not create or substitute `response.json`; the harness ignores it. Do not extract, trim into a different file, repair, follow up, retry, or select a better answer. Missing, non-UTF-8, fenced, schema-invalid, refused, timed-out, or malformed output is the observed result.
 
 The persistent trial directory records the sent prompt, raw response when present, Codex JSONL event stream, stderr, and start/final execution records. Those records bind the allowed-input and prompt hashes plus the response, stdout, and stderr hashes. `operator-config.json` binds the run configuration before dispatch; `operator-summary.json` records every trial outcome. Every one of these files is opened in exclusive-create mode; a pre-existing path aborts and is preserved. A timeout, nonzero exit, or cleanly launched process with no answer remains an observed model outcome. A pre-launch operator error, launch error, missing execution record, or incomplete hash chain makes the run ineligible for blinding; never repair or replace such a trial post hoc.
 

@@ -29,9 +29,43 @@ from typing import Any
 
 EVAL_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = EVAL_ROOT.parent
-OPERATOR_VERSION = "1.2"
+RESPONSE_SCHEMA_PATH = EVAL_ROOT / "schemas" / "response.schema.json"
+OPERATOR_VERSION = "1.3"
 TRIAL_ID_RE = re.compile(r"^trial-[0-9a-f]{16}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+SMOKE_EXPECTED_RESPONSE = {
+    "schema_version": "1.0",
+    "case_id": "case-00-smoke",
+    "signal_id": "sig-smoke",
+    "recommendation": "insufficient_evidence",
+    "support_assessment": "unsupported",
+    "independent_support": {"authors": 0, "threads": 0, "source_ids": []},
+    "excluded_or_collapsed_sources": [],
+    "counterevidence": {
+        "status": "not_established",
+        "source_ids": [],
+        "summary": "Smoke test only.",
+    },
+    "wtp": {
+        "level": "none",
+        "basis": "none",
+        "source_ids": [],
+        "summary": "No evidence was supplied.",
+    },
+    "public_memo": "This is only an operator smoke test.",
+    "citations": [
+        {
+            "source_id": "src-smoke",
+            "visibility": "public",
+            "locator": "https://example.com/smoke",
+            "source_file_sha256": None,
+            "excerpt": "Smoke test only.",
+        }
+    ],
+    "limitations": ["No research evidence was supplied."],
+    "next_test": "Run the frozen evaluation only after this smoke test passes.",
+}
 
 CORE_FILES = (
     Path("task.md"),
@@ -116,9 +150,26 @@ def write_text_exclusive(path: Path, value: str) -> None:
         handle.write(value)
 
 
+def write_bytes_exclusive(path: Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as handle:
+        handle.write(value)
+
+
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def canonical_json_value(value: Any) -> str:
+    """Serialize a JSON value so comparisons preserve every JSON scalar type."""
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def executable_identity(command: str) -> dict[str, Any]:
@@ -213,6 +264,19 @@ def require_real_directory(path: Path, label: str) -> Path:
     if is_link_or_reparse(path) or not path.is_dir():
         raise ValueError(f"{label} must be a real directory, not a link, junction, or reparse point")
     return path.resolve(strict=True)
+
+
+def require_regular_file(path: Path, label: str) -> Path:
+    if is_link_or_reparse(path):
+        raise ValueError(f"{label} must not be a link, junction, or reparse point")
+    try:
+        mode = path.stat().st_mode
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"{label} is missing") from exc
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"{label} must be a regular file")
+    return resolved
 
 
 def require_trial_directory(run_dir: Path, trial_id: Any) -> Path:
@@ -411,6 +475,8 @@ def codex_argv(
         'model_verbosity="low"',
         "-c",
         'shell_environment_policy.inherit="none"',
+        "-c",
+        "suppress_unstable_features_warning=true",
         "--enable",
         "skip_host_skill_discovery",
     ]
@@ -703,15 +769,12 @@ def smoke_test(args: argparse.Namespace) -> dict[str, Any]:
     catalog_entry, catalog_hash = model_catalog_entry(identity["resolved_path"], args.model)
     if args.reasoning not in catalog_entry["supported_reasoning_levels"]:
         raise ValueError(f"Reasoning effort {args.reasoning!r} is unsupported for {args.model}")
-    schema = {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["ok"],
-        "properties": {"ok": {"const": True}},
-    }
-    write_json_exclusive(out_dir / "response.schema.json", schema)
-    prompt = "Return exactly this JSON object and nothing else: {\"ok\":true}"
+    response_schema = require_regular_file(RESPONSE_SCHEMA_PATH, "Frozen evaluation response schema")
+    write_bytes_exclusive(out_dir / "response.schema.json", response_schema.read_bytes())
+    prompt = (
+        "Return exactly this JSON object and nothing else: "
+        + json.dumps(SMOKE_EXPECTED_RESPONSE, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
     write_text_exclusive(out_dir / "prompt.sent.txt", prompt)
     response_path = out_dir / "response.raw.txt"
     argv = codex_argv(identity["resolved_path"], out_dir, response_path, args.model, args.reasoning)
@@ -729,6 +792,18 @@ def smoke_test(args: argparse.Namespace) -> dict[str, Any]:
     write_text_exclusive(out_dir / "codex.stdout.jsonl", completed.stdout)
     write_text_exclusive(out_dir / "codex.stderr.txt", completed.stderr)
     response_present = child_file_state(out_dir, Path("response.raw.txt"), required=False)
+    response_matches_expected = False
+    response_validation_error: str | None = None
+    if response_present:
+        try:
+            response_value = json.loads(response_path.read_text(encoding="utf-8"))
+            response_matches_expected = canonical_json_value(response_value) == canonical_json_value(
+                SMOKE_EXPECTED_RESPONSE
+            )
+            if not response_matches_expected:
+                response_validation_error = "response did not equal the requested smoke object"
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            response_validation_error = f"response was not one UTF-8 JSON value: {type(exc).__name__}"
     record = {
         "schema_version": "1.0",
         "finished_at": utc_now(),
@@ -741,12 +816,14 @@ def smoke_test(args: argparse.Namespace) -> dict[str, Any]:
         "argv": argv,
         "return_code": completed.returncode,
         "response_present": response_present,
+        "response_matches_expected": response_matches_expected,
+        "response_validation_error": response_validation_error,
         "response_sha256": sha256_file(response_path) if response_present else None,
         "stdout_sha256": sha256_file(out_dir / "codex.stdout.jsonl"),
         "stderr_sha256": sha256_file(out_dir / "codex.stderr.txt"),
     }
     write_json_exclusive(out_dir / "smoke.json", record)
-    if completed.returncode != 0 or not response_present:
+    if completed.returncode != 0 or not response_present or not response_matches_expected:
         raise ValueError(f"Codex smoke failed; inspect {out_dir}")
     return record
 
