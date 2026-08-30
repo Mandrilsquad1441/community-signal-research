@@ -284,11 +284,17 @@ class OperatorTests(unittest.TestCase):
                 argv[argv.index("--output-schema") + 1],
             )
             self.assertEqual(
-                str(source / "response.raw.txt"),
-                argv[argv.index("--output-last-message") + 1],
+                (source / "response.raw.txt").resolve(strict=True),
+                Path(argv[argv.index("--output-last-message") + 1]).resolve(strict=True),
             )
-            self.assertEqual(source / "codex.stdout.jsonl", captured["stdout_path"])
-            self.assertEqual(source / "codex.stderr.txt", captured["stderr_path"])
+            self.assertEqual(
+                (source / "codex.stdout.jsonl").resolve(strict=True),
+                captured["stdout_path"].resolve(strict=True),
+            )
+            self.assertEqual(
+                (source / "codex.stderr.txt").resolve(strict=True),
+                captured["stderr_path"].resolve(strict=True),
+            )
             self.assertTrue((source / "response.raw.txt").is_file())
             self.assertFalse((source / "response.json").exists())
             self.assertTrue((source / "execution.json").is_file())
