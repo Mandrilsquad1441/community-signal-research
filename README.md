@@ -238,9 +238,11 @@ For the threat model, private-export handling, and vulnerability reporting, read
 
 The release gate includes deterministic regression tests, static skill validation, adversarial fixtures, and a preregistered forward evaluation scored by two independent, treatment-blind reviewers. The frozen 12-case suite is a regression/forward suite—eight cases informed development and four were added later—not an independent holdout or a state-of-the-art benchmark. Results will be reported only from committed, reproducible artifacts.
 
-> **Pre-release evaluation status:** results are pending publication. No behavioral benchmark or “state of the art” claim is made in this README.
+> **Pre-release evaluation status:** no confirmatory result has passed every release gate. A fresh successor run is pending; no accepted behavioral benchmark or “state of the art” claim is made in this README.
 
-An interrupted confirmatory attempt is disclosed separately as [ineligible and unscored](evals/evidence/ABORTED-CONFIRMATORY-V2.md); it is not used as product evidence.
+Confirmatory v3 was protocol-valid and showed a skill mean of 96.276, a 96.67% trial pass rate, and a paired mean lift of +30.069 points, but it [failed the preregistered zero-critical-failure gate](evals/evidence/FAILED-CONFIRMATORY-V3.md): two of 60 skill trials had critical failures. Its [exact report](evals/evidence/confirmatory-v3-report.json) is preserved without repair, replacement, rescoring, or threshold changes. It is a disclosed negative release-gate result, not evidence that the next candidate passes.
+
+An earlier interrupted confirmatory attempt is disclosed separately as [ineligible and unscored](evals/evidence/ABORTED-CONFIRMATORY-V2.md); it is not used as behavioral evidence.
 
 <!-- EVALUATION_RESULTS_PLACEHOLDER: replace this note with links and exact committed results after the evaluation suite is merged and rerun. -->
 
