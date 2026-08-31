@@ -1,0 +1,143 @@
+{
+  "schema_version": "1.0",
+  "study_id": "community-signal-confirmatory-v2-a1900773694",
+  "disposition": {
+    "behavioral_evidence": false,
+    "eligible_for_blinding": false,
+    "eligible_for_scoring": false,
+    "label": "aborted_ineligible_unscored",
+    "reason": "Operating-system shutdown began before any allocated trial completed."
+  },
+  "repository": {
+    "commit": "3d2b5ff3d4e1bcf65dc95260bfaeb1aace879352",
+    "url": "https://github.com/Mandrilsquad1441/community-signal-research"
+  },
+  "preregistered_at_utc": "2026-08-31T00:31:50.5347861Z",
+  "seeds": {
+    "allocation": 1900773694,
+    "blinding": 160678537,
+    "bootstrap": 376096950
+  },
+  "planned_design": {
+    "cases": 12,
+    "conditions": 2,
+    "replicates_per_case_condition": 5,
+    "trials": 120,
+    "model": "gpt-5.4-mini",
+    "reasoning_effort": "low",
+    "workers": 4,
+    "individual_trial_retries": 0
+  },
+  "observed_boundary": {
+    "prepared_trials": 120,
+    "trials_with_start_record": 4,
+    "trials_with_final_execution_record": 0,
+    "trials_with_raw_response": 0,
+    "operator_summary_present": false,
+    "blinding_started": false,
+    "scoring_started": false,
+    "first_start_at_utc_approx": "2026-08-31T00:34:21.936Z"
+  },
+  "host_events": [
+    {
+      "event_id": 54,
+      "log": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+      "provider": "Microsoft-Windows-TerminalServices-LocalSessionManager",
+      "record_id": 75,
+      "system_time_utc": "2026-08-31T00:34:32.9969390Z",
+      "interpretation": "System-shutdown message received."
+    },
+    {
+      "event_id": 23,
+      "log": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+      "provider": "Microsoft-Windows-TerminalServices-LocalSessionManager",
+      "record_id": 76,
+      "system_time_utc": "2026-08-31T00:34:55.8938344Z",
+      "interpretation": "Session logoff succeeded; user identity omitted."
+    },
+    {
+      "event_id": 7002,
+      "log": "System",
+      "provider": "Microsoft-Windows-Winlogon",
+      "record_id": 1517,
+      "system_time_utc": "2026-08-31T00:34:55.9032160Z",
+      "interpretation": "User-logoff notification."
+    },
+    {
+      "event_id": 6006,
+      "log": "System",
+      "provider": "EventLog",
+      "record_id": 1519,
+      "system_time_utc": "2026-08-31T00:35:20.0634495Z",
+      "interpretation": "Event Log service stopped."
+    },
+    {
+      "event_id": 109,
+      "log": "System",
+      "provider": "Microsoft-Windows-Kernel-Power",
+      "record_id": 1539,
+      "system_time_utc": "2026-08-31T00:35:25.0139003Z",
+      "interpretation": "Kernel API shutdown transition."
+    },
+    {
+      "event_id": 577,
+      "log": "System",
+      "provider": "Microsoft-Windows-Kernel-Power",
+      "record_id": 1540,
+      "system_time_utc": "2026-08-31T00:35:25.3675736Z",
+      "interpretation": "System-initiated reboot preparation."
+    },
+    {
+      "event_id": 13,
+      "log": "System",
+      "provider": "Microsoft-Windows-Kernel-General",
+      "record_id": 1541,
+      "system_time_utc": "2026-08-31T00:35:25.4883716Z",
+      "interpretation": "Operating system shutting down."
+    }
+  ],
+  "preserved_trees": [
+    {
+      "role": "prepared_run",
+      "file_count": 799,
+      "byte_count": 5599275,
+      "tree_sha256": "17e20822b83b13a630f0d521c4957d86b504f35aa218962d14aa5f2a636bd361"
+    },
+    {
+      "role": "preregistration_audit",
+      "file_count": 7,
+      "byte_count": 22282,
+      "tree_sha256": "7f400fcd0f6cd7e7777cd31ea3b1429ffac3000753223b3931193128db2beaf4"
+    },
+    {
+      "role": "passed_smoke_run",
+      "file_count": 6,
+      "byte_count": 10254,
+      "tree_sha256": "72cde16fb2bdc40b39c33a41ad1d5137e49a27852937d78e8304fd3833f4094d"
+    }
+  ],
+  "tree_fingerprint_contract": {
+    "algorithm": "sha256",
+    "encoding": "utf-8-no-bom",
+    "record": "relative/path<TAB>byte_length<TAB>lowercase_file_sha256<LF>",
+    "ordering": "PowerShell Sort-Object FullName",
+    "path_separator": "/",
+    "includes_trailing_lf": true,
+    "excluded_metadata": [
+      "directories",
+      "timestamps",
+      "ACLs",
+      "root path",
+      "root name"
+    ]
+  },
+  "recovery_policy": {
+    "resume": false,
+    "repair": false,
+    "replace_trial": false,
+    "score": false,
+    "successor_requires_new_commit": true,
+    "successor_requires_new_paths": true,
+    "successor_requires_fresh_domain_separated_seeds": true
+  }
+}

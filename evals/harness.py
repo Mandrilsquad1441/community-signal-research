@@ -107,6 +107,7 @@ SOURCE_ID_RE = re.compile(r"^src-[a-z0-9]+$")
 BLIND_ID_RE = re.compile(r"^blind-[0-9a-f]{32}$")
 BLIND_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+GIT_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 TRIAL_ID_RE = re.compile(r"^trial-[0-9a-f]{16}$")
 SOURCE_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 REQUEST_SEED_ARG_RE = re.compile(r"^--(?:request-)?seed(?:=|$)")
@@ -114,6 +115,41 @@ BOOTSTRAP_ITERATIONS = 10_000
 REQUEST_SEED_STATUS = (
     "unsupported: captured Codex exec help exposed no --seed or --request-seed "
     "option; allocation model_seed recorded but not applied"
+)
+PROCESS_TREE_CLEANUP_SECONDS = 5.0
+CANONICAL_OPERATOR_VERSION = "1.8"
+CANONICAL_BATCH_HEARTBEAT_SECONDS = 10.0
+CANONICAL_DEFAULT_SETTING = "unset; provider/CLI default"
+CANONICAL_WINDOWS_CREATION_FLAGS = 0x08000204
+CANONICAL_SKILL_CONFIG_OVERRIDES = (
+    "skills.include_instructions=false",
+    "skills.bundled.enabled=false",
+)
+CANONICAL_DISABLED_FEATURES = (
+    "apps",
+    "browser_use",
+    "browser_use_external",
+    "browser_use_full_cdp_access",
+    "code_mode_host",
+    "computer_use",
+    "goals",
+    "hooks",
+    "image_generation",
+    "in_app_browser",
+    "memories",
+    "multi_agent",
+    "multi_agent_v2",
+    "plugin_sharing",
+    "plugins",
+    "remote_plugin",
+    "shell_snapshot",
+    "shell_snapshot_v2",
+    "shell_tool",
+    "skill_search",
+    "sleep_tool",
+    "tool_suggest",
+    "view_image",
+    "workspace_dependencies",
 )
 MODEL_SEED_NOTE = (
     "Not applied; this batch's captured Codex exec help exposed no --seed "
@@ -928,6 +964,115 @@ def require_regular_file(path: Path, label: str) -> None:
         raise ValueError(f"{label}: missing regular file {path.name}")
 
 
+def canonical_operator_argv(
+    codex_path: str,
+    isolated_dir: Path,
+    response_path: Path,
+    model: str,
+    reasoning: str,
+) -> list[str]:
+    """Reconstruct the only model invocation accepted as evaluation evidence."""
+
+    argv = [
+        codex_path,
+        "exec",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--strict-config",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--model",
+        model,
+        "-c",
+        f'model_reasoning_effort="{reasoning}"',
+        "-c",
+        'model_verbosity="low"',
+        "-c",
+        CANONICAL_SKILL_CONFIG_OVERRIDES[0],
+        "-c",
+        CANONICAL_SKILL_CONFIG_OVERRIDES[1],
+        "-c",
+        'shell_environment_policy.inherit="none"',
+        "-c",
+        "suppress_unstable_features_warning=true",
+        "--enable",
+        "skip_host_skill_discovery",
+    ]
+    for feature in CANONICAL_DISABLED_FEATURES:
+        argv.extend(["--disable", feature])
+    argv.extend(
+        [
+            "--cd",
+            str(isolated_dir),
+            "--output-schema",
+            str(isolated_dir / "response.schema.json"),
+            "--output-last-message",
+            str(response_path),
+            "--json",
+            "--color",
+            "never",
+            "-",
+        ]
+    )
+    return argv
+
+
+def require_canonical_operator_argv(
+    argv: Any,
+    *,
+    codex_path: str,
+    model: str,
+    reasoning: str,
+    trial_id: str,
+    response_path: Path,
+    run_dir: Path,
+    phase: str,
+) -> None:
+    """Reject any recorded invocation that weakens the frozen execution policy."""
+
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or any(not bounded_string(token, 1, 10000) for token in argv)
+    ):
+        raise ValueError(f"{phase} {trial_id}: started record has no invocation argv")
+    if any(REQUEST_SEED_ARG_RE.match(token) for token in argv):
+        raise ValueError(
+            f"{phase} {trial_id}: invocation argv contains an unsupported request-seed option"
+        )
+    if argv.count("--cd") != 1:
+        raise ValueError(f"{phase} {trial_id}: invocation argv is not canonical")
+    cd_index = argv.index("--cd")
+    if cd_index + 1 >= len(argv):
+        raise ValueError(f"{phase} {trial_id}: invocation argv is not canonical")
+    isolated_raw = argv[cd_index + 1]
+    isolated_candidate = Path(isolated_raw)
+    prefix = f"csr-eval-{trial_id}-"
+    if (
+        not isolated_candidate.is_absolute()
+        or ".." in isolated_candidate.parts
+        or not isolated_candidate.name.startswith(prefix)
+        or len(isolated_candidate.name) <= len(prefix)
+    ):
+        raise ValueError(f"{phase} {trial_id}: invocation working directory is unsafe")
+    isolated_dir = isolated_candidate.resolve()
+    run_root = run_dir.resolve()
+    skill_root = SKILL_ROOT.resolve()
+    if is_within(isolated_dir, run_root) or is_within(isolated_dir, skill_root):
+        raise ValueError(f"{phase} {trial_id}: invocation working directory is not isolated")
+    expected = canonical_operator_argv(
+        codex_path,
+        isolated_dir,
+        response_path,
+        model,
+        reasoning,
+    )
+    if argv != expected:
+        raise ValueError(f"{phase} {trial_id}: invocation argv is not canonical")
+
+
 def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str) -> dict[str, Any]:
     """Verify and hash the canonical operator's complete first-attempt record."""
     run_dir = require_real_directory(run_dir, f"{phase} run directory")
@@ -951,6 +1096,7 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         "codex",
         "model_catalog_entry",
         "model_catalog_raw_sha256",
+        "model_catalog_selected_sha256",
         "model",
         "reasoning_effort",
         "model_verbosity",
@@ -964,17 +1110,28 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         "ignore_user_config",
         "ignore_rules",
         "skip_host_skill_discovery",
+        "skills_include_instructions",
+        "bundled_skills_enabled",
         "disabled_features",
         "jobs",
         "timeout_seconds",
+        "batch_heartbeat_seconds",
+        "child_process_isolation",
+        "bounded_submission",
+        "max_in_flight",
+        "foreground_supervision_required",
         "python",
         "platform",
+        "os_name",
         "trial_count",
         "dispatch_order",
     }
     if set(config) != config_keys:
         raise ValueError(f"{phase}: operator config is incomplete or has unknown fields")
-    if config.get("schema_version") != "1.0" or not bounded_string(config.get("operator_version"), 1, 80):
+    if (
+        config.get("schema_version") != "1.0"
+        or config.get("operator_version") != CANONICAL_OPERATOR_VERSION
+    ):
         raise ValueError(f"{phase}: operator config schema/version is malformed")
     summary_keys = {
         "schema_version",
@@ -988,7 +1145,20 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
     }
     if set(summary) != summary_keys:
         raise ValueError(f"{phase}: operator summary is incomplete or has unknown fields")
-    if summary.get("schema_version") != "1.0" or not bounded_string(summary.get("finished_at"), 1, 80):
+    if (
+        summary.get("schema_version") != "1.0"
+        or not bounded_string(summary.get("finished_at"), 1, 80)
+        or any(
+            not is_int(summary.get(field)) or summary[field] < 0
+            for field in (
+                "trial_count",
+                "response_count",
+                "zero_exit_count",
+                "timeout_count",
+                "operator_error_count",
+            )
+        )
+    ):
         raise ValueError(f"{phase}: operator summary schema/timestamp is malformed")
     trials = allocation.get("trials")
     if not isinstance(trials, list) or not trials:
@@ -1040,7 +1210,10 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
     )
     operator_path = EVAL_ROOT / "run_trials.py"
     require_regular_file(operator_path, phase)
-    if config.get("operator_script_sha256") != sha256_file(operator_path):
+    if (
+        config.get("operator_script") != str(operator_path.resolve())
+        or config.get("operator_script_sha256") != sha256_file(operator_path)
+    ):
         raise ValueError(f"{phase}: operator script hash mismatch")
     repository = config.get("repository")
     if (
@@ -1058,6 +1231,7 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         "version_output",
         "exec_help_sha256",
         "request_seed_options",
+        "prompt_isolation",
     }
     if not isinstance(codex_identity, dict) or set(codex_identity) != expected_codex_keys:
         raise ValueError(f"{phase}: operator executable/model identity is incomplete")
@@ -1071,12 +1245,50 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         or codex_identity.get("request_seed_options") != []
     ):
         raise ValueError(f"{phase}: operator executable identity is malformed or seed-capable")
-    if not isinstance(config.get("model_catalog_entry"), dict):
+    resolved_codex = Path(codex_identity["resolved_path"])
+    if not resolved_codex.is_absolute() or ".." in resolved_codex.parts:
+        raise ValueError(f"{phase}: operator executable path is not absolute and canonical")
+    prompt_isolation = codex_identity.get("prompt_isolation")
+    if (
+        not isinstance(prompt_isolation, dict)
+        or set(prompt_isolation)
+        != {
+            "schema_version",
+            "combined_output_sha256",
+            "message_count",
+            "skills_include_instructions",
+            "bundled_skills_enabled",
+            "forbidden_markers_found",
+        }
+        or prompt_isolation.get("schema_version") != "1.0"
+        or not matches(prompt_isolation.get("combined_output_sha256"), SHA256_RE)
+        or not is_int(prompt_isolation.get("message_count"))
+        or prompt_isolation["message_count"] < 1
+        or prompt_isolation.get("skills_include_instructions") is not False
+        or prompt_isolation.get("bundled_skills_enabled") is not False
+        or prompt_isolation.get("forbidden_markers_found") != []
+    ):
+        raise ValueError(f"{phase}: operator prompt-isolation proof is malformed or unsafe")
+    model_catalog = config.get("model_catalog_entry")
+    model_catalog_keys = {
+        "slug",
+        "display_name",
+        "description",
+        "default_reasoning_level",
+        "supported_reasoning_levels",
+        "context_window",
+        "max_context_window",
+        "tool_mode",
+    }
+    if not isinstance(model_catalog, dict) or set(model_catalog) != model_catalog_keys:
         raise ValueError(f"{phase}: operator executable/model identity is incomplete")
+    if config.get("model_catalog_selected_sha256") != sha256_bytes(canonical_json(model_catalog)):
+        raise ValueError(f"{phase}: selected model-catalog entry hash mismatch")
     string_config_fields = (
         "created_at",
         "expected_commit",
         "model_catalog_raw_sha256",
+        "model_catalog_selected_sha256",
         "model",
         "reasoning_effort",
         "model_verbosity",
@@ -1087,9 +1299,46 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         "sandbox",
         "python",
         "platform",
+        "os_name",
     )
     if any(not bounded_string(config.get(field), 1, 10000) for field in string_config_fields):
         raise ValueError(f"{phase}: operator configuration contains a missing text field")
+    if (
+        not matches(config.get("expected_commit"), GIT_COMMIT_RE)
+        or not matches(config.get("model_catalog_raw_sha256"), SHA256_RE)
+    ):
+        raise ValueError(f"{phase}: operator configuration contains a malformed binding hash")
+    supported_reasoning = model_catalog.get("supported_reasoning_levels")
+    context_window = model_catalog.get("context_window")
+    max_context_window = model_catalog.get("max_context_window")
+    if (
+        model_catalog.get("slug") != config.get("model")
+        or any(
+            not bounded_string(model_catalog.get(field), 1, 10000)
+            for field in (
+                "display_name",
+                "description",
+                "default_reasoning_level",
+            )
+        )
+        or not valid_unique_string_list(
+            supported_reasoning,
+            minimum_items=1,
+            item_minimum=1,
+            item_maximum=80,
+        )
+        or config.get("reasoning_effort") not in supported_reasoning
+        or model_catalog.get("default_reasoning_level") not in supported_reasoning
+        or not is_int(context_window)
+        or context_window < 1
+        or not is_int(max_context_window)
+        or max_context_window < context_window
+        or (
+            model_catalog.get("tool_mode") is not None
+            and not bounded_string(model_catalog.get("tool_mode"), 1, 10000)
+        )
+    ):
+        raise ValueError(f"{phase}: selected model-catalog entry is malformed or mismatched")
     if config.get("request_seed") != REQUEST_SEED_STATUS:
         raise ValueError(f"{phase}: operator request-seed status is not the canonical unsupported declaration")
     boolean_config_fields = (
@@ -1098,15 +1347,112 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         "ignore_user_config",
         "ignore_rules",
         "skip_host_skill_discovery",
+        "skills_include_instructions",
+        "bundled_skills_enabled",
+        "bounded_submission",
+        "foreground_supervision_required",
     )
     if any(not isinstance(config.get(field), bool) for field in boolean_config_fields):
         raise ValueError(f"{phase}: operator configuration contains a malformed boolean")
+    if (
+        config.get("model_verbosity") != "low"
+        or config.get("temperature") != CANONICAL_DEFAULT_SETTING
+        or config.get("top_p") != CANONICAL_DEFAULT_SETTING
+        or config.get("max_output_tokens") != CANONICAL_DEFAULT_SETTING
+        or config.get("sandbox") != "read-only"
+        or config.get("network_search") is not False
+        or config.get("ephemeral") is not True
+        or config.get("ignore_user_config") is not True
+        or config.get("ignore_rules") is not True
+        or config.get("skip_host_skill_discovery") is not True
+        or config.get("skills_include_instructions") is not False
+        or config.get("bundled_skills_enabled") is not False
+        or config.get("bounded_submission") is not True
+        or config.get("foreground_supervision_required") is not True
+        or config.get("disabled_features") != list(CANONICAL_DISABLED_FEATURES)
+        or config.get("os_name") != os.name
+    ):
+        raise ValueError(f"{phase}: operator isolation/supervision policy is unsafe")
+    heartbeat = config.get("batch_heartbeat_seconds")
+    isolation = config.get("child_process_isolation")
+    expected_isolation_mode = (
+        "windows_suspended_nested_job_kill_on_close"
+        if os.name == "nt"
+        else "posix_session_process_group_cooperative_cleanup"
+    )
+    isolation_valid = False
+    if isinstance(isolation, dict) and isolation.get("close_fds") is True:
+        if isolation.get("mode") == "windows_suspended_nested_job_kill_on_close":
+            isolation_valid = (
+                set(isolation)
+                == {
+                    "mode",
+                    "creationflags",
+                    "close_fds",
+                    "create_suspended",
+                    "kill_on_job_close",
+                    "assignment_policy",
+                    "target_execution_before_assignment",
+                    "containment_scope",
+                    "cleanup_timeout_seconds",
+                    "cleanup_policy",
+                    "drain_verification",
+                }
+                and isolation.get("creationflags") == CANONICAL_WINDOWS_CREATION_FLAGS
+                and isolation.get("create_suspended") is True
+                and isolation.get("kill_on_job_close") is True
+                and isolation.get("assignment_policy")
+                == "create_suspended_assign_validate_primary_thread_resume_fail_closed"
+                and isolation.get("target_execution_before_assignment") is False
+                and isolation.get("containment_scope")
+                == "direct CreateProcess descendants while breakaway remains disabled"
+                and isolation.get("cleanup_timeout_seconds") == PROCESS_TREE_CLEANUP_SECONDS
+                and isolation.get("cleanup_policy")
+                == "terminate_reap_verify_empty_close_fail_closed"
+                and isolation.get("drain_verification")
+                == "job_basic_accounting_active_processes_zero"
+            )
+        elif isolation.get("mode") == "posix_session_process_group_cooperative_cleanup":
+            isolation_valid = (
+                set(isolation)
+                == {
+                    "mode",
+                    "start_new_session",
+                    "close_fds",
+                    "escape_resistant",
+                    "containment_scope",
+                    "trust_assumption",
+                    "termination_signal",
+                    "cleanup_timeout_seconds",
+                    "cleanup_policy",
+                    "drain_verification",
+                }
+                and isolation.get("start_new_session") is True
+                and isolation.get("escape_resistant") is False
+                and isolation.get("containment_scope") == "original POSIX process group only"
+                and isolation.get("trust_assumption")
+                == (
+                    "the child and descendants do not call setsid/setpgid or delegate "
+                    "process creation to an external service"
+                )
+                and isolation.get("termination_signal") == "SIGKILL"
+                and isolation.get("cleanup_timeout_seconds") == PROCESS_TREE_CLEANUP_SECONDS
+                and isolation.get("cleanup_policy")
+                == "terminate_reap_verify_empty_close_fail_closed"
+                and isolation.get("drain_verification")
+                == "original_process_group_killpg_zero_until_esrch"
+            )
     if (
         not is_int(config.get("jobs"))
         or config["jobs"] < 1
         or not is_int(config.get("timeout_seconds"))
         or config["timeout_seconds"] < 1
-        or not valid_unique_string_list(config.get("disabled_features"))
+        or not is_int(config.get("max_in_flight"))
+        or config.get("max_in_flight") != config.get("jobs")
+        or heartbeat != CANONICAL_BATCH_HEARTBEAT_SECONDS
+        or not isinstance(isolation, dict)
+        or isolation.get("mode") != expected_isolation_mode
+        or not isolation_valid
     ):
         raise ValueError(f"{phase}: operator execution policy is malformed")
 
@@ -1201,7 +1547,10 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
             raise ValueError(f"{phase} {trial_id}: model seed note is not the canonical unsupported declaration")
         if started.get("operator_version") != config.get("operator_version"):
             raise ValueError(f"{phase} {trial_id}: operator version mismatch")
-        if started.get("schema_version") != "1.0" or not isinstance(started.get("started_at"), str):
+        if (
+            started.get("schema_version") != "1.0"
+            or not bounded_string(started.get("started_at"), 1, 80)
+        ):
             raise ValueError(f"{phase} {trial_id}: started record schema/timestamp is malformed")
         require_hashes(
             f"{phase} {trial_id} allowed inputs",
@@ -1210,14 +1559,16 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         )
         if started.get("prompt_sha256") != sha256_file(prompt_path):
             raise ValueError(f"{phase} {trial_id}: prompt hash mismatch")
-        if (
-            not isinstance(started.get("argv"), list)
-            or not started["argv"]
-            or any(not bounded_string(token, 1, 10000) for token in started["argv"])
-        ):
-            raise ValueError(f"{phase} {trial_id}: started record has no invocation argv")
-        if any(REQUEST_SEED_ARG_RE.match(token) for token in started["argv"]):
-            raise ValueError(f"{phase} {trial_id}: invocation argv contains an unsupported request-seed option")
+        require_canonical_operator_argv(
+            started.get("argv"),
+            codex_path=codex_identity["resolved_path"],
+            model=config["model"],
+            reasoning=config["reasoning_effort"],
+            trial_id=trial_id,
+            response_path=response_path,
+            run_dir=run_dir,
+            phase=phase,
+        )
         for field, value in started.items():
             if execution.get(field) != value:
                 raise ValueError(f"{phase} {trial_id}: final execution record changed started field {field}")
@@ -1228,12 +1579,16 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
             raise ValueError(f"{phase} {trial_id}: execution booleans are malformed")
         if execution.get("launch_error") is not None:
             raise ValueError(f"{phase} {trial_id}: model process did not launch cleanly")
-        if not isinstance(execution.get("finished_at"), str):
+        if not bounded_string(execution.get("finished_at"), 1, 80):
             raise ValueError(f"{phase} {trial_id}: final execution timestamp is malformed")
         if isinstance(execution.get("return_code"), bool) or not isinstance(execution.get("return_code"), int):
             raise ValueError(f"{phase} {trial_id}: execution return code is malformed")
-        if not isinstance(execution.get("duration_seconds"), (int, float)) or isinstance(
-            execution.get("duration_seconds"), bool
+        duration_seconds = execution.get("duration_seconds")
+        if (
+            not isinstance(duration_seconds, (int, float))
+            or isinstance(duration_seconds, bool)
+            or not math.isfinite(duration_seconds)
+            or duration_seconds < 0
         ):
             raise ValueError(f"{phase} {trial_id}: execution duration is malformed")
         if response_present:
@@ -2139,11 +2494,19 @@ def public_operator_config(config: Any) -> dict[str, Any] | None:
         "ignore_user_config",
         "ignore_rules",
         "skip_host_skill_discovery",
+        "skills_include_instructions",
+        "bundled_skills_enabled",
         "disabled_features",
         "jobs",
         "timeout_seconds",
+        "batch_heartbeat_seconds",
+        "child_process_isolation",
+        "bounded_submission",
+        "max_in_flight",
+        "foreground_supervision_required",
         "python",
         "platform",
+        "os_name",
         "trial_count",
     )
     result = {key: config[key] for key in simple_keys if key in config}
@@ -2156,12 +2519,15 @@ def public_operator_config(config: Any) -> dict[str, Any] | None:
                 "version_output",
                 "exec_help_sha256",
                 "request_seed_options",
+                "prompt_isolation",
             )
             if key in codex
         }
     catalog = config.get("model_catalog_entry")
     if isinstance(catalog, dict):
         result["model_catalog_entry"] = catalog
+    if "model_catalog_selected_sha256" in config:
+        result["model_catalog_selected_sha256"] = config["model_catalog_selected_sha256"]
     return result
 
 

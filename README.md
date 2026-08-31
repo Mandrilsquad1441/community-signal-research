@@ -236,9 +236,11 @@ For the threat model, private-export handling, and vulnerability reporting, read
 
 ## Evaluation and tests
 
-The release gate includes deterministic regression tests, static skill validation, adversarial fixtures, and an independent forward evaluation. Results will be reported only from committed, reproducible artifacts.
+The release gate includes deterministic regression tests, static skill validation, adversarial fixtures, and a preregistered forward evaluation scored by two independent, treatment-blind reviewers. The frozen 12-case suite is a regression/forward suite—eight cases informed development and four were added later—not an independent holdout or a state-of-the-art benchmark. Results will be reported only from committed, reproducible artifacts.
 
 > **Pre-release evaluation status:** results are pending publication. No behavioral benchmark or “state of the art” claim is made in this README.
+
+An interrupted confirmatory attempt is disclosed separately as [ineligible and unscored](evals/evidence/ABORTED-CONFIRMATORY-V2.md); it is not used as product evidence.
 
 <!-- EVALUATION_RESULTS_PLACEHOLDER: replace this note with links and exact committed results after the evaluation suite is merged and rerun. -->
 

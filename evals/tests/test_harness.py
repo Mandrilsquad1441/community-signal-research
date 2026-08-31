@@ -93,37 +93,94 @@ def complete_run(run_dir: Path, *, replicates: int = 1, seed: int = 321) -> dict
     cases = harness.case_index()
     oracles = harness.oracle_index()
     operator_path = HARNESS_PATH.parent / "run_trials.py"
+    codex_path = str((run_dir.parent / "synthetic-codex").resolve())
+    expected_commit = "a" * 40
+    model_catalog_entry = {
+        "slug": "test-model",
+        "display_name": "Test Model",
+        "description": "Synthetic model used by the verifier tests.",
+        "default_reasoning_level": "test",
+        "supported_reasoning_levels": ["test"],
+        "context_window": 1000,
+        "max_context_window": 1000,
+        "tool_mode": None,
+    }
+    if os.name == "nt":
+        child_process_isolation = {
+            "mode": "windows_suspended_nested_job_kill_on_close",
+            "creationflags": harness.CANONICAL_WINDOWS_CREATION_FLAGS,
+            "close_fds": True,
+            "create_suspended": True,
+            "kill_on_job_close": True,
+            "assignment_policy": (
+                "create_suspended_assign_validate_primary_thread_resume_fail_closed"
+            ),
+            "target_execution_before_assignment": False,
+            "containment_scope": (
+                "direct CreateProcess descendants while breakaway remains disabled"
+            ),
+            "cleanup_timeout_seconds": harness.PROCESS_TREE_CLEANUP_SECONDS,
+            "cleanup_policy": "terminate_reap_verify_empty_close_fail_closed",
+            "drain_verification": "job_basic_accounting_active_processes_zero",
+        }
+    else:
+        child_process_isolation = {
+            "mode": "posix_session_process_group_cooperative_cleanup",
+            "start_new_session": True,
+            "close_fds": True,
+            "escape_resistant": False,
+            "containment_scope": "original POSIX process group only",
+            "trust_assumption": (
+                "the child and descendants do not call setsid/setpgid or delegate "
+                "process creation to an external service"
+            ),
+            "termination_signal": "SIGKILL",
+            "cleanup_timeout_seconds": harness.PROCESS_TREE_CLEANUP_SECONDS,
+            "cleanup_policy": "terminate_reap_verify_empty_close_fail_closed",
+            "drain_verification": "original_process_group_killpg_zero_until_esrch",
+        }
     harness.write_json(
         run_dir / "operator-config.json",
         {
             "schema_version": "1.0",
-            "operator_version": "test",
-            "operator_script": str(operator_path),
+            "operator_version": harness.CANONICAL_OPERATOR_VERSION,
+            "operator_script": str(operator_path.resolve()),
             "operator_script_sha256": harness.sha256_file(operator_path),
             "created_at": "2026-08-30T00:00:00Z",
-            "repository": {"head": "test-commit", "status_short": []},
+            "repository": {"head": expected_commit, "status_short": []},
             "allocation_seed": allocation["seed"],
             "replicates": allocation["replicates"],
             "fixture_hashes": allocation["fixture_hashes"],
             "skill_resource_hashes": allocation["skill_resource_hashes"],
             "dispatch_order": allocation["dispatch_order"],
-            "expected_commit": "test-commit",
+            "expected_commit": expected_commit,
             "codex": {
                 "requested_command": "synthetic-codex",
-                "resolved_path": "synthetic-codex",
+                "resolved_path": codex_path,
                 "binary_sha256": "0" * 64,
                 "version_output": "synthetic-codex 1.0",
                 "exec_help_sha256": "2" * 64,
                 "request_seed_options": [],
+                "prompt_isolation": {
+                    "schema_version": "1.0",
+                    "combined_output_sha256": "3" * 64,
+                    "message_count": 1,
+                    "skills_include_instructions": False,
+                    "bundled_skills_enabled": False,
+                    "forbidden_markers_found": [],
+                },
             },
-            "model_catalog_entry": {"slug": "test-model"},
+            "model_catalog_entry": model_catalog_entry,
             "model_catalog_raw_sha256": "1" * 64,
+            "model_catalog_selected_sha256": harness.sha256_bytes(
+                harness.canonical_json(model_catalog_entry)
+            ),
             "model": "test-model",
             "reasoning_effort": "test",
             "model_verbosity": "low",
-            "temperature": "unset",
-            "top_p": "unset",
-            "max_output_tokens": "unset",
+            "temperature": harness.CANONICAL_DEFAULT_SETTING,
+            "top_p": harness.CANONICAL_DEFAULT_SETTING,
+            "max_output_tokens": harness.CANONICAL_DEFAULT_SETTING,
             "request_seed": harness.REQUEST_SEED_STATUS,
             "sandbox": "read-only",
             "network_search": False,
@@ -131,11 +188,19 @@ def complete_run(run_dir: Path, *, replicates: int = 1, seed: int = 321) -> dict
             "ignore_user_config": True,
             "ignore_rules": True,
             "skip_host_skill_discovery": True,
-            "disabled_features": ["synthetic-disabled-feature"],
+            "skills_include_instructions": False,
+            "bundled_skills_enabled": False,
+            "disabled_features": list(harness.CANONICAL_DISABLED_FEATURES),
             "jobs": 1,
             "timeout_seconds": 30,
+            "batch_heartbeat_seconds": 10.0,
+            "child_process_isolation": child_process_isolation,
+            "bounded_submission": True,
+            "max_in_flight": 1,
+            "foreground_supervision_required": True,
             "python": "synthetic-python",
             "platform": "synthetic-platform",
+            "os_name": os.name,
             "trial_count": len(allocation["trials"]),
         },
     )
@@ -151,9 +216,10 @@ def complete_run(run_dir: Path, *, replicates: int = 1, seed: int = 321) -> dict
         harness.write_text(prompt_path, f"synthetic operator prompt for {trial['trial_id']}\n")
         harness.write_text(stdout_path, "")
         harness.write_text(stderr_path, "")
+        isolated_dir = (run_dir.parent / f"csr-eval-{trial['trial_id']}-synthetic").resolve()
         started = {
             "schema_version": "1.0",
-            "operator_version": "test",
+            "operator_version": harness.CANONICAL_OPERATOR_VERSION,
             "trial_id": trial["trial_id"],
             "case_id": trial["case_id"],
             "pair_id": trial["pair_id"],
@@ -165,7 +231,13 @@ def complete_run(run_dir: Path, *, replicates: int = 1, seed: int = 321) -> dict
             "started_at": "2026-08-30T00:00:00Z",
             "prompt_sha256": harness.sha256_file(prompt_path),
             "allowed_file_hashes": trial["trial_file_hashes"],
-            "argv": ["synthetic-codex", "exec"],
+            "argv": harness.canonical_operator_argv(
+                codex_path,
+                isolated_dir,
+                response_path,
+                "test-model",
+                "test",
+            ),
         }
         harness.write_json(trial_dir / "execution.started.json", started)
         execution = {
@@ -1045,6 +1117,152 @@ class HarnessTests(unittest.TestCase):
                 harness.write_json(started_path, started)
                 harness.write_json(execution_path, execution)
                 with self.assertRaisesRegex(ValueError, expected_error):
+                    harness.make_blind_bundle(
+                        run_dir,
+                        root / "public",
+                        root / "private" / "map.json",
+                        seed=654,
+                    )
+
+    def test_blind_rejects_unsafe_operator_isolation_or_supervision_evidence(self) -> None:
+        mutations = (
+            (
+                "model-visible skill marker",
+                lambda config: config["codex"]["prompt_isolation"][
+                    "forbidden_markers_found"
+                ].append("skill.md"),
+                "prompt-isolation proof is malformed or unsafe",
+            ),
+            (
+                "selected model entry hash",
+                lambda config: config.__setitem__(
+                    "model_catalog_selected_sha256", "0" * 64
+                ),
+                "selected model-catalog entry hash mismatch",
+            ),
+            (
+                "eager submission",
+                lambda config: config.__setitem__("bounded_submission", False),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "network search enabled",
+                lambda config: config.__setitem__("network_search", True),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "persistent session",
+                lambda config: config.__setitem__("ephemeral", False),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "user config enabled",
+                lambda config: config.__setitem__("ignore_user_config", False),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "repository rules enabled",
+                lambda config: config.__setitem__("ignore_rules", False),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "writable sandbox",
+                lambda config: config.__setitem__("sandbox", "danger-full-access"),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "one model tool enabled",
+                lambda config: config["disabled_features"].remove("shell_tool"),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "contradictory host OS",
+                lambda config: config.__setitem__(
+                    "os_name",
+                    "posix" if os.name == "nt" else "nt",
+                ),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "unfrozen sampling setting",
+                lambda config: config.__setitem__("temperature", "unset"),
+                "isolation/supervision policy is unsafe",
+            ),
+            (
+                "more in flight than workers",
+                lambda config: config.__setitem__("max_in_flight", config["jobs"] + 1),
+                "execution policy is malformed",
+            ),
+            (
+                "weaker cleanup policy",
+                lambda config: config["child_process_isolation"].__setitem__(
+                    "cleanup_policy", "terminate_root_only"
+                ),
+                "execution policy is malformed",
+            ),
+        )
+        for label, mutate, expected_error in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                run_dir = root / "run"
+                complete_run(run_dir)
+                config_path = run_dir / "operator-config.json"
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+                mutate(config)
+                harness.write_json(config_path, config)
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    harness.make_blind_bundle(
+                        run_dir,
+                        root / "public",
+                        root / "private" / "map.json",
+                        seed=654,
+                    )
+
+    def test_blind_rejects_noncanonical_operator_argv(self) -> None:
+        def remove_flag(argv: list[str], flag: str) -> None:
+            argv.remove(flag)
+
+        def replace_after(argv: list[str], flag: str, replacement: str) -> None:
+            argv[argv.index(flag) + 1] = replacement
+
+        mutations = (
+            ("user config flag removed", lambda argv, run: remove_flag(argv, "--ignore-user-config")),
+            (
+                "sandbox widened",
+                lambda argv, run: replace_after(argv, "--sandbox", "danger-full-access"),
+            ),
+            ("network flag added", lambda argv, run: argv.insert(2, "--search")),
+            (
+                "working directory in run",
+                lambda argv, run: replace_after(argv, "--cd", str(run.resolve())),
+            ),
+            (
+                "persistent response redirected",
+                lambda argv, run: replace_after(
+                    argv,
+                    "--output-last-message",
+                    str((run.parent / "outside-response.json").resolve()),
+                ),
+            ),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                run_dir = root / "run"
+                allocation = complete_run(run_dir)
+                trial_dir = run_dir / "dispatch" / allocation["trials"][0]["trial_id"]
+                started_path = trial_dir / "execution.started.json"
+                execution_path = trial_dir / "execution.json"
+                started = json.loads(started_path.read_text(encoding="utf-8"))
+                execution = json.loads(execution_path.read_text(encoding="utf-8"))
+                mutate(started["argv"], run_dir)
+                execution["argv"] = copy.deepcopy(started["argv"])
+                harness.write_json(started_path, started)
+                harness.write_json(execution_path, execution)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "invocation (argv is not canonical|working directory is unsafe)",
+                ):
                     harness.make_blind_bundle(
                         run_dir,
                         root / "public",
