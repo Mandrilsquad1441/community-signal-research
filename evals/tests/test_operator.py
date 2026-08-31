@@ -45,6 +45,15 @@ def trial_record(trial: Path, trial_id: str = VALID_TRIAL_ID) -> dict[str, objec
 
 
 class OperatorTests(unittest.TestCase):
+    def assert_same_directory_entry(self, expected: Path, actual: Path) -> None:
+        """Accept OS path aliases without accepting a hard link in another directory."""
+
+        expected = Path(expected)
+        actual = Path(actual)
+        self.assertEqual(expected.name, actual.name)
+        self.assertTrue(os.path.samefile(expected.parent, actual.parent))
+        self.assertTrue(os.path.samefile(expected, actual))
+
     def create_junction(self, link: Path, target: Path) -> None:
         if os.name != "nt":
             self.skipTest("Windows directory-junction regression")
@@ -717,20 +726,20 @@ class OperatorTests(unittest.TestCase):
                 (source / "response.raw.txt").resolve(strict=True),
                 Path(argv[argv.index("--output-last-message") + 1]).resolve(strict=True),
             )
-            self.assertEqual(
-                (source / "codex.stdout.jsonl").resolve(strict=True),
-                captured["stdout_path"].resolve(strict=True),
+            self.assert_same_directory_entry(
+                source / "codex.stdout.jsonl", captured["stdout_path"]
             )
-            self.assertEqual(
-                (source / "codex.stderr.txt").resolve(strict=True),
-                captured["stderr_path"].resolve(strict=True),
+            self.assert_same_directory_entry(
+                source / "codex.stderr.txt", captured["stderr_path"]
             )
             self.assertTrue((source / "response.raw.txt").is_file())
             self.assertFalse((source / "response.json").exists())
             self.assertTrue((source / "execution.json").is_file())
             self.assertTrue(result["response_present"])
-            self.assertIn(source / "codex.stdout.jsonl", parent_syncs)
-            self.assertIn(source / "response.raw.txt", parent_syncs)
+            stdout_sync = next(path for path in parent_syncs if path.name == "codex.stdout.jsonl")
+            response_sync = next(path for path in parent_syncs if path.name == "response.raw.txt")
+            self.assert_same_directory_entry(source / "codex.stdout.jsonl", stdout_sync)
+            self.assert_same_directory_entry(source / "response.raw.txt", response_sync)
             self.assertEqual(["communicate", "terminate", "wait_empty", "close"], lifecycle)
             popen_kwargs = captured["popen_kwargs"]
             self.assertTrue(popen_kwargs["close_fds"])
@@ -1677,10 +1686,13 @@ class OperatorTests(unittest.TestCase):
 
     def test_capture_cleans_owner_if_interrupt_hits_before_store_fast(self) -> None:
         events: list[str] = []
-        armed = False
+        armed = [False]
 
         class FakeProcess:
             returncode: int | None = None
+
+            def communicate(self, *_args: object, **_kwargs: object) -> None:
+                raise AssertionError("callee-return interrupt injection did not occur")
 
             def wait(self, timeout: float) -> int:
                 del timeout
@@ -1707,19 +1719,19 @@ class OperatorTests(unittest.TestCase):
         def fake_launch(
             _argv: list[str], *, owner: operator.ActiveProcessRegistry, **_kwargs: object
         ) -> operator.ManagedChild:
-            nonlocal armed
             managed = operator.ManagedChild(FakeProcess(), FakeContainment())
             owner.add(managed)
-            armed = True
+            armed[0] = True
             return managed
 
         def interrupt_after_return(frame: object, event: str, _arg: object) -> object:
-            nonlocal armed
-            if frame.f_code is operator.run_managed_capture.__code__:
-                frame.f_trace_opcodes = True
-                if event == "opcode" and armed:
-                    armed = False
-                    raise KeyboardInterrupt("between CALL and STORE_FAST")
+            # A callee return event occurs after the owned child is published
+            # but before the caller can store the returned ManagedChild.  This
+            # is portable across CPython bytecode layouts (3.10-3.14), unlike
+            # depending on a distinct post-CALL opcode event.
+            if frame.f_code is fake_launch.__code__ and event == "return" and armed[0]:
+                armed[0] = False
+                raise KeyboardInterrupt("between CALL and STORE_FAST")
             return interrupt_after_return
 
         previous_trace = sys.gettrace()
@@ -1732,7 +1744,7 @@ class OperatorTests(unittest.TestCase):
                 operator.run_managed_capture(["codex", "--version"], timeout_seconds=1)
         finally:
             sys.settrace(previous_trace)
-        self.assertFalse(armed)
+        self.assertFalse(armed[0])
         self.assertEqual(
             [
                 "containment.terminate",
@@ -2235,7 +2247,10 @@ class OperatorTests(unittest.TestCase):
             self.assertIsNone(operator.record_batch_abort(args, RuntimeError("before config")))
             operator.write_json(run_dir / "operator-config.json", {"sealed": True})
             recorded = operator.record_batch_abort(args, RuntimeError("synthetic abort"))
-            self.assertEqual(str(run_dir / "operator-abort.json"), recorded)
+            self.assertIsNotNone(recorded)
+            self.assert_same_directory_entry(
+                run_dir / "operator-abort.json", Path(recorded)
+            )
             payload = json.loads((run_dir / "operator-abort.json").read_text(encoding="utf-8"))
             self.assertEqual("RuntimeError", payload["exception_type"])
             self.assertIn("do not resume", payload["disposition"])
@@ -2252,7 +2267,8 @@ class OperatorTests(unittest.TestCase):
                 [operator.ProcessContainmentError("job close failed")],
             )
             cleanup_path = run_dir / "operator-abort-cleanup.json"
-            self.assertEqual(str(cleanup_path), cleanup_recorded)
+            self.assertIsNotNone(cleanup_recorded)
+            self.assert_same_directory_entry(cleanup_path, Path(cleanup_recorded))
             cleanup_payload = json.loads(cleanup_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 "ProcessContainmentError",

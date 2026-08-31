@@ -89,6 +89,10 @@ def perfect_response(case: dict, oracle: dict) -> dict:
 
 def complete_run(run_dir: Path, *, replicates: int = 1, seed: int = 321) -> dict:
     harness.prepare_trials(run_dir, replicates=replicates, seed=seed)
+    # Mirror the operator's fail-closed path handling.  Temporary-directory
+    # spellings can be aliases on macOS (/var -> /private/var) and Windows
+    # (8.3 short names), while the real operator records resolved paths.
+    run_dir = run_dir.resolve(strict=True)
     allocation = json.loads((run_dir / "allocation.private.json").read_text(encoding="utf-8"))
     cases = harness.case_index()
     oracles = harness.oracle_index()
