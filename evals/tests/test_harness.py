@@ -781,13 +781,16 @@ class HarnessTests(unittest.TestCase):
     def test_high_salience_treatment_rules_are_fail_closed(self) -> None:
         skill_text = (harness.SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
         non_negotiable = skill_text.split("## Runtime", 1)[0]
-        self.assertIn("Public excerpts are copy-only values", non_negotiable)
-        self.assertIn("Build citations before drafting prose", non_negotiable)
-        self.assertIn("Lock those values before drafting", non_negotiable)
+        self.assertIn("Public excerpts are locked, complete copied sentences", non_negotiable)
+        self.assertIn("a comma, semicolon, colon, or dash is not a sentence boundary", non_negotiable)
+        self.assertIn("never `Our suite works,`", non_negotiable)
         self.assertIn("excerpt in captured_text", non_negotiable)
-        self.assertIn("never `our tool works`", non_negotiable)
         self.assertIn("Private text never supplies public wording", non_negotiable)
         self.assertIn("PUBLIC_FACT_BANK", non_negotiable)
+        self.assertIn("PUBLIC_DRAFT", non_negotiable)
+        self.assertIn("PRIVATE_PATCH", non_negotiable)
+        self.assertIn("No prose edit is allowed afterward", non_negotiable)
+        self.assertIn("Never say that \"public and private sources\"", non_negotiable)
         self.assertIn("Run the deletion gate", non_negotiable)
         self.assertIn("Never propose a private-conditioned test", non_negotiable)
 
