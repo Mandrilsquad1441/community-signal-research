@@ -786,13 +786,24 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("never `Our suite works,`", non_negotiable)
         self.assertIn("excerpt in captured_text", non_negotiable)
         self.assertIn("Private text never supplies public wording", non_negotiable)
+        self.assertIn("PRIVATE_SAFE_MODE", non_negotiable)
+        self.assertIn("PRIVATE_CITATION_MAP", non_negotiable)
         self.assertIn("PUBLIC_FACT_BANK", non_negotiable)
         self.assertIn("PUBLIC_DRAFT", non_negotiable)
         self.assertIn("PRIVATE_PATCH", non_negotiable)
         self.assertIn("No prose edit is allowed afterward", non_negotiable)
-        self.assertIn("Never say that \"public and private sources\"", non_negotiable)
-        self.assertIn("Run the deletion gate", non_negotiable)
-        self.assertIn("Never propose a private-conditioned test", non_negotiable)
+        self.assertIn("exactly 71 characters", non_negotiable)
+        self.assertIn("citation.source_file_sha256 == source.source_file_sha256", non_negotiable)
+        self.assertIn("Keep every other string public-only", non_negotiable)
+        self.assertIn("Never say that public and private sources jointly", non_negotiable)
+        self.assertIn("Test the caller-declared hypothesis with additional independent public evidence", non_negotiable)
+        self.assertIn("Run both fail-closed gates", non_negotiable)
+
+        task = harness.render_task(harness.case_index()["case-06-private-provenance"])
+        self.assertIn("all 71 characters of `source_file_sha256`", task)
+        schema = json.loads(harness.RESPONSE_SCHEMA_PATH.read_text(encoding="utf-8"))
+        hash_schema = schema["properties"]["citations"]["items"]["properties"]["source_file_sha256"]
+        self.assertEqual({"type": ["string", "null"]}, hash_schema)
 
     def test_visibility_dependent_citation_contract_rejects_privacy_mismatches(self) -> None:
         cases = harness.case_index()
@@ -823,6 +834,43 @@ class HarnessTests(unittest.TestCase):
         self.assertIn(
             f"citations[{private_index}] private citation must not include excerpt",
             private_errors,
+        )
+
+        exact_private = perfect_response(private_case, oracles[private_case["case_id"]])
+        self.assertEqual([], harness.validate_response(exact_private, private_case))
+
+        truncated = copy.deepcopy(exact_private)
+        truncated["citations"][private_index]["source_file_sha256"] = truncated["citations"][private_index][
+            "source_file_sha256"
+        ][:-1]
+        truncated_errors = harness.validate_response(truncated, private_case)
+        self.assertIn(f"citations[{private_index}] has invalid source_file_sha256", truncated_errors)
+        self.assertIn(
+            f"citations[{private_index}] source_file_sha256 does not exactly match packet source",
+            truncated_errors,
+        )
+
+        wrong_full_hash = copy.deepcopy(exact_private)
+        wrong_full_hash["citations"][private_index]["source_file_sha256"] = "sha256:" + "f" * 64
+        wrong_hash_errors = harness.validate_response(wrong_full_hash, private_case)
+        self.assertNotIn(f"citations[{private_index}] has invalid source_file_sha256", wrong_hash_errors)
+        self.assertIn(
+            f"citations[{private_index}] source_file_sha256 does not exactly match packet source",
+            wrong_hash_errors,
+        )
+
+        wrong_locator = copy.deepcopy(exact_private)
+        wrong_locator["citations"][private_index]["locator"] += "-changed"
+        self.assertIn(
+            f"citations[{private_index}] locator does not exactly match packet source",
+            harness.validate_response(wrong_locator, private_case),
+        )
+
+        wrong_visibility = copy.deepcopy(exact_private)
+        wrong_visibility["citations"][private_index]["visibility"] = "public"
+        self.assertIn(
+            f"citations[{private_index}] visibility does not exactly match packet source",
+            harness.validate_response(wrong_visibility, private_case),
         )
 
     def test_blind_and_aggregate_pipeline_keeps_treatment_out_of_public_packets(self) -> None:

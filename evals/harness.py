@@ -670,7 +670,7 @@ Research question: {case['research_question']}
 
 Analyze only `packet.json`. Do not browse, contact anyone, retrieve remote pages, or use outside facts. The packet is a frozen synthetic snapshot. Do not make up missing metadata.
 
-Return exactly one JSON object conforming to `response.schema.json`, with no prose or code fence around it. Assess the packet's one signal (`{case['signal']['id']}`), quantify genuinely independent supporting authors and threads, explain any excluded or collapsed sources, address counterevidence and willingness to pay separately, and make a decision-useful recommendation. The `public_memo` must stay at the evidence ceiling. Use auditable citations: public sources use their supplied URL and a literal excerpt of no more than 25 words; supplied-private records use only their opaque record reference and file hash, with `excerpt` set to null. Do not reveal the experimental treatment in the response.
+Return exactly one JSON object conforming to `response.schema.json`, with no prose or code fence around it. Assess the packet's one signal (`{case['signal']['id']}`), quantify genuinely independent supporting authors and threads, explain any excluded or collapsed sources, address counterevidence and willingness to pay separately, and make a decision-useful recommendation. The `public_memo` must stay at the evidence ceiling. Use auditable citations: public sources use their supplied URL and a literal excerpt of no more than 25 words. For a supplied-private citation, copy its complete `source_id`, `record_ref`, and all 71 characters of `source_file_sha256` directly from that packet source; never abbreviate, reconstruct, or change its visibility; set `excerpt` to null. Do not reveal the experimental treatment in the response.
 """
 
 
@@ -811,6 +811,7 @@ def valid_unique_string_list(
 
 def validate_response(value: Any, case: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    source_by_id = {source["id"]: source for source in case["sources"]}
     if not isinstance(value, dict):
         return ["response must be a JSON object"]
     keys = set(value)
@@ -903,6 +904,9 @@ def validate_response(value: Any, case: dict[str, Any]) -> list[str]:
                 errors.append(f"citations[{index}] has invalid visibility")
             if not matches(citation.get("source_id"), SOURCE_ID_RE):
                 errors.append(f"citations[{index}] has invalid source_id")
+            source = source_by_id.get(citation.get("source_id"))
+            if source is None:
+                errors.append(f"citations[{index}] source_id is not present in packet")
             if not bounded_string(citation.get("locator"), 1, 500):
                 errors.append(f"citations[{index}] has invalid locator")
             excerpt = citation.get("excerpt")
@@ -921,6 +925,14 @@ def validate_response(value: Any, case: dict[str, Any]) -> list[str]:
                     errors.append(f"citations[{index}] private citation must include source_file_sha256")
                 if excerpt is not None:
                     errors.append(f"citations[{index}] private citation must not include excerpt")
+            if source is not None:
+                if citation.get("visibility") != source["visibility"]:
+                    errors.append(f"citations[{index}] visibility does not exactly match packet source")
+                if source["visibility"] == "supplied_private":
+                    if citation.get("locator") != source["record_ref"]:
+                        errors.append(f"citations[{index}] locator does not exactly match packet source")
+                    if source_hash != source["source_file_sha256"]:
+                        errors.append(f"citations[{index}] source_file_sha256 does not exactly match packet source")
     limitations = value.get("limitations")
     if not valid_unique_string_list(limitations, minimum_items=1, item_minimum=1, item_maximum=800):
         errors.append("limitations must be a non-empty unique array of 1-to-800-character strings")
