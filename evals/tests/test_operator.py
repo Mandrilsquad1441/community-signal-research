@@ -54,6 +54,114 @@ class OperatorTests(unittest.TestCase):
             self.skipTest(f"junction creation is unavailable: {completed.stderr or completed.stdout}")
         self.assertTrue(operator.is_link_or_reparse(link))
 
+    def test_request_seed_option_detection_is_exact_and_deduplicated(self) -> None:
+        help_text = "Options:\n  --seed <INTEGER>\n  --request-seed=VALUE\n  --seed <INTEGER>\n  --seedling\n"
+        self.assertEqual(
+            {"--seed", "--request-seed"},
+            set(operator.extract_request_seed_options(help_text)),
+        )
+        self.assertEqual([], operator.extract_request_seed_options("Options: --seedling --model-seed"))
+
+    def test_request_seed_capability_record_fails_closed_when_missing_or_malformed(self) -> None:
+        for identity in ({}, {"request_seed_options": None}, {"request_seed_options": "--seed"}):
+            with self.subTest(identity=identity), self.assertRaisesRegex(
+                ValueError, "malformed request-seed capability data"
+            ):
+                operator.require_request_seed_unsupported(identity)
+
+    def test_executable_identity_binds_help_and_version_to_one_binary_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "codex.exe"
+            executable.write_bytes(b"stable-codex-binary")
+            version = subprocess.CompletedProcess(
+                [str(executable), "--version"], 0, stdout="codex-cli test\n", stderr=""
+            )
+            help_result = subprocess.CompletedProcess(
+                [str(executable), "exec", "--help"],
+                0,
+                stdout="Usage: codex exec\n  --model MODEL\n",
+                stderr="warning text\n",
+            )
+            with (
+                mock.patch.object(operator.shutil, "which", return_value=str(executable)),
+                mock.patch.object(operator.subprocess, "run", side_effect=[version, help_result]),
+            ):
+                identity = operator.executable_identity("codex")
+            self.assertEqual(operator.sha256_file(executable), identity["binary_sha256"])
+            self.assertEqual(
+                operator.sha256_bytes(help_result.stdout.encode() + b"\x00" + help_result.stderr.encode()),
+                identity["exec_help_sha256"],
+            )
+            self.assertEqual([], identity["request_seed_options"])
+
+    def test_executable_identity_rejects_binary_swap_during_probes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "codex.exe"
+            executable.write_bytes(b"binary-a")
+
+            def swap_after_version(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                executable.write_bytes(b"binary-b")
+                return subprocess.CompletedProcess(argv, 0, stdout="codex-cli test\n", stderr="")
+
+            with (
+                mock.patch.object(operator.shutil, "which", return_value=str(executable)),
+                mock.patch.object(operator.subprocess, "run", side_effect=swap_after_version),
+                self.assertRaisesRegex(ValueError, "hash changed"),
+            ):
+                operator.executable_identity("codex")
+
+    def test_preflight_rejects_new_request_seed_capability_before_catalog_lookup(self) -> None:
+        args = argparse.Namespace(codex="codex", model="gpt-5.4-mini", reasoning="low")
+        identity = {
+            "resolved_path": "codex",
+            "request_seed_options": ["--request-seed"],
+        }
+        with (
+            mock.patch.object(operator, "executable_identity", return_value=identity),
+            mock.patch.object(operator, "model_catalog_entry") as catalog,
+            self.assertRaisesRegex(ValueError, "update the operator to apply every allocated model seed"),
+        ):
+            operator.preflight(args)
+        catalog.assert_not_called()
+
+    def test_batch_rejects_new_request_seed_capability_before_writing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary) / "run"
+            run_dir.mkdir()
+            operator.write_json(
+                run_dir / "allocation.private.json",
+                {
+                    "seed": 20260830,
+                    "replicates": 5,
+                    "fixture_hashes": {},
+                    "skill_resource_hashes": {},
+                    "trials": [],
+                    "dispatch_order": [],
+                },
+            )
+            args = argparse.Namespace(
+                run_dir=run_dir,
+                codex="codex",
+                model="gpt-5.4-mini",
+                reasoning="low",
+                jobs=1,
+                timeout_seconds=30,
+                expected_commit="abc123",
+                expected_allocation_seed=20260830,
+            )
+            identity = {
+                "resolved_path": "codex",
+                "request_seed_options": ["--seed"],
+            }
+            with (
+                mock.patch.object(operator, "executable_identity", return_value=identity),
+                mock.patch.object(operator, "model_catalog_entry") as catalog,
+                self.assertRaisesRegex(ValueError, "Codex exec now exposes request-seed option"),
+            ):
+                operator.run_batch(args)
+            catalog.assert_not_called()
+            self.assertFalse((run_dir / "operator-config.json").exists())
+
     def test_baseline_prompt_contains_only_core_staged_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             trial = Path(temporary) / "trial"
@@ -166,6 +274,7 @@ class OperatorTests(unittest.TestCase):
             with (
                 mock.patch.object(operator, "executable_identity", return_value=identity),
                 mock.patch.object(operator, "model_catalog_entry", return_value=(catalog, "b" * 64)),
+                mock.patch.object(operator, "require_executable_hash"),
                 mock.patch.object(operator.subprocess, "run", side_effect=fake_run),
             ):
                 record = operator.smoke_test(args)
@@ -203,6 +312,7 @@ class OperatorTests(unittest.TestCase):
             with (
                 mock.patch.object(operator, "executable_identity", return_value=identity),
                 mock.patch.object(operator, "model_catalog_entry", return_value=(catalog, "b" * 64)),
+                mock.patch.object(operator, "require_executable_hash"),
                 mock.patch.object(operator.subprocess, "run", side_effect=fake_run),
                 self.assertRaisesRegex(ValueError, "Codex smoke failed"),
             ):
@@ -248,6 +358,7 @@ class OperatorTests(unittest.TestCase):
                         "model_catalog_entry",
                         return_value=(catalog, "b" * 64),
                     ),
+                    mock.patch.object(operator, "require_executable_hash"),
                     mock.patch.object(operator.subprocess, "run", side_effect=fake_run),
                     self.assertRaisesRegex(ValueError, "Codex smoke failed"),
                 ):
@@ -293,11 +404,41 @@ class OperatorTests(unittest.TestCase):
                     operator.execute_trial(
                         trial,
                         run_dir,
-                        "codex",
+                        str(OPERATOR_PATH),
+                        operator.sha256_file(OPERATOR_PATH),
                         "gpt-5.4-mini",
                         "low",
                         30,
                     )
+            popen.assert_not_called()
+            self.assertFalse((source / "execution.started.json").exists())
+            self.assertFalse((source / "prompt.sent.txt").exists())
+
+    def test_execute_rejects_executable_swap_before_launch_without_persistent_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_dir = root / "run"
+            source = run_dir / "dispatch" / VALID_TRIAL_ID
+            source.mkdir(parents=True)
+            write_core(source)
+            trial = trial_record(source)
+            executable = root / "codex.exe"
+            executable.write_bytes(b"binary-a")
+            expected_hash = operator.sha256_file(executable)
+            executable.write_bytes(b"binary-b")
+            with (
+                mock.patch.object(operator.subprocess, "Popen") as popen,
+                self.assertRaisesRegex(ValueError, "hash changed"),
+            ):
+                operator.execute_trial(
+                    trial,
+                    run_dir,
+                    str(executable),
+                    expected_hash,
+                    "gpt-5.4-mini",
+                    "low",
+                    30,
+                )
             popen.assert_not_called()
             self.assertFalse((source / "execution.started.json").exists())
             self.assertFalse((source / "prompt.sent.txt").exists())
@@ -315,7 +456,15 @@ class OperatorTests(unittest.TestCase):
             self.create_junction(dispatch / VALID_TRIAL_ID, outside)
             with mock.patch.object(operator.subprocess, "Popen") as popen:
                 with self.assertRaisesRegex(ValueError, "link, junction, or reparse point"):
-                    operator.execute_trial(trial, run_dir, "codex", "gpt-5.4-mini", "low", 30)
+                    operator.execute_trial(
+                        trial,
+                        run_dir,
+                        str(OPERATOR_PATH),
+                        operator.sha256_file(OPERATOR_PATH),
+                        "gpt-5.4-mini",
+                        "low",
+                        30,
+                    )
             popen.assert_not_called()
             for name in (
                 "prompt.sent.txt",
@@ -337,7 +486,15 @@ class OperatorTests(unittest.TestCase):
             trial = trial_record(outside, "../outside")
             with mock.patch.object(operator.subprocess, "Popen") as popen:
                 with self.assertRaisesRegex(ValueError, "unsafe trial_id"):
-                    operator.execute_trial(trial, run_dir, "codex", "gpt-5.4-mini", "low", 30)
+                    operator.execute_trial(
+                        trial,
+                        run_dir,
+                        str(OPERATOR_PATH),
+                        operator.sha256_file(OPERATOR_PATH),
+                        "gpt-5.4-mini",
+                        "low",
+                        30,
+                    )
             popen.assert_not_called()
             self.assertFalse((outside / "prompt.sent.txt").exists())
 
@@ -369,7 +526,8 @@ class OperatorTests(unittest.TestCase):
                     operator.execute_trial(
                         trial,
                         run_dir,
-                        "codex",
+                        str(OPERATOR_PATH),
+                        operator.sha256_file(OPERATOR_PATH),
                         "gpt-5.4-mini",
                         "low",
                         30,
@@ -422,7 +580,8 @@ class OperatorTests(unittest.TestCase):
                 result = operator.execute_trial(
                     trial,
                     run_dir,
-                    "codex",
+                    str(OPERATOR_PATH),
+                    operator.sha256_file(OPERATOR_PATH),
                     "gpt-5.4-mini",
                     "low",
                     30,
@@ -484,7 +643,11 @@ class OperatorTests(unittest.TestCase):
                 mock.patch.object(
                     operator,
                     "executable_identity",
-                    return_value={"resolved_path": "codex", "binary_sha256": "bin"},
+                    return_value={
+                        "resolved_path": "codex",
+                        "binary_sha256": "a" * 64,
+                        "request_seed_options": [],
+                    },
                 ),
                 mock.patch.object(
                     operator,
@@ -496,6 +659,7 @@ class OperatorTests(unittest.TestCase):
                     "git_snapshot",
                     return_value={"head": "abc123", "status_short": ["?? scratch.txt"]},
                 ),
+                mock.patch.object(operator, "require_executable_hash"),
             ):
                 with self.assertRaisesRegex(ValueError, "worktree is dirty"):
                     operator.run_batch(args)
@@ -530,7 +694,11 @@ class OperatorTests(unittest.TestCase):
                 mock.patch.object(
                     operator,
                     "executable_identity",
-                    return_value={"resolved_path": "codex", "binary_sha256": "bin"},
+                    return_value={
+                        "resolved_path": "codex",
+                        "binary_sha256": "a" * 64,
+                        "request_seed_options": [],
+                    },
                 ),
                 mock.patch.object(
                     operator,
@@ -542,6 +710,7 @@ class OperatorTests(unittest.TestCase):
                     "git_snapshot",
                     return_value={"head": "abc123", "status_short": []},
                 ),
+                mock.patch.object(operator, "require_executable_hash"),
             ):
                 summary = operator.run_batch(args)
             config = json.loads((run_dir / "operator-config.json").read_text(encoding="utf-8"))
@@ -580,7 +749,11 @@ class OperatorTests(unittest.TestCase):
                 mock.patch.object(
                     operator,
                     "executable_identity",
-                    return_value={"resolved_path": "codex", "binary_sha256": "bin"},
+                    return_value={
+                        "resolved_path": "codex",
+                        "binary_sha256": "a" * 64,
+                        "request_seed_options": [],
+                    },
                 ),
                 mock.patch.object(
                     operator,
@@ -592,6 +765,7 @@ class OperatorTests(unittest.TestCase):
                     "git_snapshot",
                     return_value={"head": "abc123", "status_short": []},
                 ),
+                mock.patch.object(operator, "require_executable_hash"),
             ):
                 with self.assertRaisesRegex(ValueError, "refusing a second batch"):
                     operator.run_batch(args)

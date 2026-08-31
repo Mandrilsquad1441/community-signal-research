@@ -30,9 +30,17 @@ from typing import Any
 EVAL_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = EVAL_ROOT.parent
 RESPONSE_SCHEMA_PATH = EVAL_ROOT / "schemas" / "response.schema.json"
-OPERATOR_VERSION = "1.3"
+OPERATOR_VERSION = "1.4"
 TRIAL_ID_RE = re.compile(r"^trial-[0-9a-f]{16}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+REQUEST_SEED_STATUS = (
+    "unsupported: captured Codex exec help exposed no --seed or --request-seed "
+    "option; allocation model_seed recorded but not applied"
+)
+MODEL_SEED_NOTE = (
+    "Not applied; this batch's captured Codex exec help exposed no --seed "
+    "or --request-seed option."
+)
 
 SMOKE_EXPECTED_RESPONSE = {
     "schema_version": "1.0",
@@ -172,11 +180,48 @@ def canonical_json_value(value: Any) -> str:
     )
 
 
+def extract_request_seed_options(help_text: str) -> list[str]:
+    """Return request-seed flags explicitly advertised by ``codex exec --help``."""
+    return sorted(
+        set(re.findall(r"(?<![\w-])--(?:request-)?seed(?![\w-])", help_text))
+    )
+
+
+def require_request_seed_unsupported(identity: dict[str, Any]) -> None:
+    if (
+        not isinstance(identity, dict)
+        or "request_seed_options" not in identity
+        or not isinstance(identity["request_seed_options"], list)
+        or any(not isinstance(option, str) or not option for option in identity["request_seed_options"])
+    ):
+        raise ValueError("Codex executable identity has malformed request-seed capability data")
+    options = identity["request_seed_options"]
+    if options:
+        rendered = ", ".join(str(option) for option in options)
+        raise ValueError(
+            "Codex exec now exposes request-seed option(s) "
+            f"{rendered}; update the operator to apply every allocated model seed "
+            "before running this evaluation"
+        )
+
+
+def require_executable_hash(command_path: str, expected_sha256: str, label: str) -> None:
+    if not isinstance(expected_sha256, str) or not SHA256_RE.fullmatch(expected_sha256):
+        raise ValueError(f"{label} expected hash is malformed")
+    executable = require_regular_file(Path(command_path), label)
+    actual_sha256 = sha256_file(executable)
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"{label} hash changed: expected {expected_sha256}, observed {actual_sha256}"
+        )
+
+
 def executable_identity(command: str) -> dict[str, Any]:
     resolved = shutil.which(command)
     if resolved is None:
         raise ValueError(f"Executable not found: {command}")
-    executable = Path(resolved).resolve()
+    executable = Path(resolved).resolve(strict=True)
+    binary_sha256 = sha256_file(executable)
     completed = subprocess.run(
         [str(executable), "--version"],
         text=True,
@@ -187,11 +232,34 @@ def executable_identity(command: str) -> dict[str, Any]:
     )
     if completed.returncode != 0:
         raise ValueError(f"Unable to obtain Codex version: {completed.stderr.strip()}")
+    require_executable_hash(str(executable), binary_sha256, "Codex executable after version probe")
+    version_output = (completed.stdout + "\n" + completed.stderr).strip()
+    if not version_output:
+        raise ValueError("Unable to obtain Codex version: command returned no version text")
+    help_completed = subprocess.run(
+        [str(executable), "exec", "--help"],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    if help_completed.returncode != 0:
+        raise ValueError(f"Unable to obtain Codex exec help: {help_completed.stderr.strip()}")
+    require_executable_hash(str(executable), binary_sha256, "Codex executable after help probe")
+    help_bytes = (
+        help_completed.stdout.encode("utf-8")
+        + b"\x00"
+        + help_completed.stderr.encode("utf-8")
+    )
+    help_text = help_completed.stdout + "\n" + help_completed.stderr
     return {
         "requested_command": command,
         "resolved_path": str(executable),
-        "binary_sha256": sha256_file(executable),
-        "version_output": completed.stdout.strip(),
+        "binary_sha256": binary_sha256,
+        "version_output": version_output,
+        "exec_help_sha256": sha256_bytes(help_bytes),
+        "request_seed_options": extract_request_seed_options(help_text),
     }
 
 
@@ -503,6 +571,7 @@ def execute_trial(
     trial: dict[str, Any],
     run_dir: Path,
     codex_path: str,
+    expected_codex_sha256: str,
     model: str,
     reasoning: str,
     timeout_seconds: int,
@@ -538,6 +607,11 @@ def execute_trial(
         if require_trial_directory(run_dir, trial_id) != trial_dir:
             raise ValueError(f"{trial_id}: trial directory changed during staging")
         require_fresh_trial_outputs(trial_dir)
+        require_executable_hash(
+            codex_path,
+            expected_codex_sha256,
+            f"Codex executable before {trial_id} launch",
+        )
         argv = codex_argv(codex_path, isolated_dir, response_path, model, reasoning)
         write_text_exclusive(prompt_path, prompt)
         started = {
@@ -550,7 +624,7 @@ def execute_trial(
             "condition": trial["condition"],
             "allocated_model_seed": trial.get("model_seed"),
             "model_seed_applied": False,
-            "model_seed_note": "codex exec 0.151.0-alpha.7.2 exposes no request-seed option",
+            "model_seed_note": MODEL_SEED_NOTE,
             "started_at": utc_now(),
             "prompt_sha256": sha256_bytes(prompt.encode("utf-8")),
             "allowed_file_hashes": allowed_hashes,
@@ -572,12 +646,27 @@ def execute_trial(
                     env=os.environ.copy(),
                 )
                 try:
+                    require_executable_hash(
+                        codex_path,
+                        expected_codex_sha256,
+                        f"Codex executable after {trial_id} launch",
+                    )
+                except Exception:
+                    process.kill()
+                    process.communicate()
+                    raise
+                try:
                     process.communicate(prompt.encode("utf-8"), timeout=timeout_seconds)
                 except subprocess.TimeoutExpired:
                     timed_out = True
                     process.kill()
                     process.communicate()
                 return_code = process.returncode
+                require_executable_hash(
+                    codex_path,
+                    expected_codex_sha256,
+                    f"Codex executable after {trial_id} completion",
+                )
             except OSError as exc:
                 launch_error = f"{type(exc).__name__}: {exc}"
     duration = time.monotonic() - start_clock
@@ -624,7 +713,13 @@ def run_batch(args: argparse.Namespace) -> dict[str, Any]:
             require_fresh_trial_outputs(trial_dir)
 
     identity = executable_identity(args.codex)
+    require_request_seed_unsupported(identity)
     catalog_entry, catalog_hash = model_catalog_entry(identity["resolved_path"], args.model)
+    require_executable_hash(
+        identity["resolved_path"],
+        identity["binary_sha256"],
+        "Codex executable after model-catalog probe",
+    )
     if args.reasoning not in catalog_entry["supported_reasoning_levels"]:
         raise ValueError(f"Reasoning effort {args.reasoning!r} is unsupported for {args.model}")
     repository = git_snapshot(REPO_ROOT)
@@ -665,7 +760,7 @@ def run_batch(args: argparse.Namespace) -> dict[str, Any]:
         "temperature": "unset; provider/CLI default",
         "top_p": "unset; provider/CLI default",
         "max_output_tokens": "unset; provider/CLI default",
-        "request_seed": "unsupported by this codex exec version; allocation model_seed recorded but not applied",
+        "request_seed": REQUEST_SEED_STATUS,
         "sandbox": "read-only",
         "network_search": False,
         "ephemeral": True,
@@ -692,6 +787,7 @@ def run_batch(args: argparse.Namespace) -> dict[str, Any]:
                 trial,
                 run_dir,
                 identity["resolved_path"],
+                identity["binary_sha256"],
                 args.model,
                 args.reasoning,
                 args.timeout_seconds,
@@ -724,6 +820,11 @@ def run_batch(args: argparse.Namespace) -> dict[str, Any]:
                 ),
                 flush=True,
             )
+    require_executable_hash(
+        identity["resolved_path"],
+        identity["binary_sha256"],
+        "Codex executable after batch",
+    )
     summary = {
         "schema_version": "1.0",
         "finished_at": utc_now(),
@@ -740,7 +841,13 @@ def run_batch(args: argparse.Namespace) -> dict[str, Any]:
 
 def preflight(args: argparse.Namespace) -> dict[str, Any]:
     identity = executable_identity(args.codex)
+    require_request_seed_unsupported(identity)
     catalog_entry, catalog_hash = model_catalog_entry(identity["resolved_path"], args.model)
+    require_executable_hash(
+        identity["resolved_path"],
+        identity["binary_sha256"],
+        "Codex executable after model-catalog probe",
+    )
     if args.reasoning not in catalog_entry["supported_reasoning_levels"]:
         raise ValueError(f"Reasoning effort {args.reasoning!r} is unsupported for {args.model}")
     return {
@@ -750,7 +857,10 @@ def preflight(args: argparse.Namespace) -> dict[str, Any]:
         "model_catalog_raw_sha256": catalog_hash,
         "reasoning_effort": args.reasoning,
         "disabled_features": list(DISABLED_FEATURES),
-        "note": "The CLI exposes no request-seed option.",
+        "note": (
+            "The captured Codex exec help exposes no --seed or --request-seed option; "
+            "allocated model seeds cannot be applied."
+        ),
     }
 
 
@@ -767,6 +877,11 @@ def smoke_test(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("Smoke output directory must be outside the repository")
     identity = executable_identity(args.codex)
     catalog_entry, catalog_hash = model_catalog_entry(identity["resolved_path"], args.model)
+    require_executable_hash(
+        identity["resolved_path"],
+        identity["binary_sha256"],
+        "Codex executable after model-catalog probe",
+    )
     if args.reasoning not in catalog_entry["supported_reasoning_levels"]:
         raise ValueError(f"Reasoning effort {args.reasoning!r} is unsupported for {args.model}")
     response_schema = require_regular_file(RESPONSE_SCHEMA_PATH, "Frozen evaluation response schema")
@@ -788,6 +903,11 @@ def smoke_test(args: argparse.Namespace) -> dict[str, Any]:
         capture_output=True,
         check=False,
         timeout=args.timeout_seconds,
+    )
+    require_executable_hash(
+        identity["resolved_path"],
+        identity["binary_sha256"],
+        "Codex executable after smoke call",
     )
     write_text_exclusive(out_dir / "codex.stdout.jsonl", completed.stdout)
     write_text_exclusive(out_dir / "codex.stderr.txt", completed.stderr)

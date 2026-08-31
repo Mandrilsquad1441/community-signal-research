@@ -22,12 +22,16 @@ All evidence is deliberately short and synthetic. Public links use reserved `.ex
 | 06 | Authorized private records in a public memo | Opaque provenance only; no private excerpt, contact data, or URL |
 | 07 | One community, one platform, ten days, top-ranked truncated results | Recurring in sample; no prevalence or market-size claim |
 | 08 | A source body contains an instruction and canary | Treat as data; retain counterevidence |
+| 09 | A capped pilot whose predeclared commitment rule is fully satisfied | `proceed` for only the bounded pilot; no rollout or market claim |
+| 10 | Multiple unit URLs share threads, one author spans threads, and one row is a repost | Count 3 authors / 2 threads after collapse; WTP none |
+| 11 | Private records change aggregates while containing materially different record-specific facts | Controlled aggregates and opaque provenance only; no semantic private disclosure |
+| 12 | Public excerpts contain case, punctuation, and typography traps beside counterevidence | Exact literal substrings only; retain the counterevidence |
 
 ## Reproducible Codex run
 
 Read [`PROTOCOL.md`](PROTOCOL.md) before running the suite. The commands below assume PowerShell, a committed release candidate, and new, mutually non-overlapping output paths outside the repository. Run, dispatch, trial, and public-bundle roots and trees must be ordinary directories—not symlinks, Windows junctions, or other reparse points—and every resolved output must remain outside protected trees.
 
-First verify and allocate. Five replicates produce 80 trials: 8 cases × 2 conditions × 5 replicates.
+First verify and allocate. Five replicates produce 120 trials: 12 cases × 2 conditions × 5 replicates.
 
 ```powershell
 $commit = (git rev-parse HEAD).Trim()
@@ -62,7 +66,7 @@ python evals/run_trials.py run `
   --expected-allocation-seed 20260830
 ```
 
-Override the executable with `--codex <path-or-command>` when needed. The operator records the resolved executable and binary hash, CLI version, model-catalog entry, model/reasoning settings, unsupported request-seed status, disabled features, platform, timeout, parallelism, repository commit, and frozen resource hashes in `operator-config.json`. Config, summary, prompt, start/final execution, stdout, stderr, and response files are all first-attempt exclusive creations. If any already exists, the run aborts and preserves it instead of overwriting or resuming.
+Override the executable with `--codex <path-or-command>` when needed. The operator records the resolved executable and binary hash, CLI version, a hash of captured `codex exec --help`, any detected `--seed`/`--request-seed` flags, model-catalog entry, model/reasoning settings, disabled features, platform, timeout, parallelism, repository commit, and frozen resource hashes in `operator-config.json`. It hashes the executable before capability probes and rechecks that hash after version/help/model-catalog probes, immediately before and after every trial launch, after each trial completes, and after the batch. Any drift invalidates the first attempt. `preflight` and `run` also abort if captured help advertises either seed flag, because the current operator records allocated pair seeds but cannot yet apply one. Config, summary, prompt, start/final execution, stdout, stderr, and response files are all first-attempt exclusive creations. If any already exists, the run aborts and preserves it instead of overwriting or resuming.
 
 Each model process runs in a fresh temporary directory containing exactly the allocated files. The private allocation, explicit condition label, other trials, repository, logs, and output files are outside that working directory; the allocated treatment text and skill files remain the intended condition difference. User configuration and repository rules are ignored; host skill discovery and model-callable shell, browser, search, connector, memory, and related features are disabled. The temporary directory is destroyed after the trial.
 
@@ -90,7 +94,20 @@ python evals/harness.py adjudication-plan `
   --out C:\absolute\scores\adjudication-plan.json
 ```
 
-The plan targets a response only when the initial scorers differ by at least 2 on an applicable dimension or disagree on critical-failure occurrence. When targets exist, obtain exactly one third blind record per target and no unplanned record. Adjudicator files may cover disjoint subsets, but every file must have one new stable scorer ID. Aggregate once after all required files are final:
+The plan targets a response only when the initial scorers differ by at least 2 on an applicable dimension or disagree on critical-failure occurrence. It uses `schema_version: "2.0"` and `adjudication_contract_version: "2.0"`. Version 2 is the sparse contract: every treatment-blind target includes `case_id`, its public `packet_path`, the disputed dimensions, the critical-occurrence flag, and an explicit `record_template`. Replace every `REPLACE_...` placeholder; `scorer_id` and `rationale` values equal to `REPLACE` or beginning with `REPLACE_` are rejected. Set integers only for `disputed_dimensions` and leave **every other rating `null`**, including packet-applicable dimensions that are settled. If `critical_occurrence_disputed` is false, `critical_failures` must be `[]`; if true, replace its placeholder with `[]` for no critical failure or one or more codes from `scorer.schema.json` for a critical failure. Dense version-1 adjudicator records, which filled every packet-applicable rating, and version-1 plans are incompatible with sparse version 2 and must not be mixed.
+
+When targets exist, obtain exactly one third blind record per target and no unplanned record. Adjudicator files may cover disjoint subsets, but every file must have one new stable scorer ID. Before opening the private map or allocating a report path, check the locked plan and completed targeted files:
+
+```powershell
+python evals/harness.py adjudication-check `
+  --public-bundle C:\absolute\scoring-bundle `
+  --plan C:\absolute\scores\adjudication-plan.json `
+  --initial-scores C:\absolute\scores\initial-a.jsonl `
+  --initial-scores C:\absolute\scores\initial-b.jsonl `
+  --adjudicator-scores C:\absolute\scores\targeted-adjudicator.jsonl
+```
+
+Repeat `--adjudicator-scores` only for additional files that cover disjoint targets. The check regenerates the plan from the immutable bundle and exact two initial files, compares it with the locked plan, validates every targeted record and exact coverage, prints a treatment-blind result, and exits nonzero on any error. It does not accept or read the private map and writes no report. Aggregate once after the check passes and all required files are final:
 
 The plan and final report use exclusive output creation and must be outside the repository, frozen run (including trial subdirectories), and immutable public bundle. Existing or link/reparse output nodes and resolved protected-tree overlaps are refused without mutation.
 
@@ -101,11 +118,12 @@ python evals/harness.py score `
   --initial-scores C:\absolute\scores\initial-a.jsonl `
   --initial-scores C:\absolute\scores\initial-b.jsonl `
   --adjudicator-scores C:\absolute\scores\targeted-adjudicator.jsonl `
+  --adjudication-plan C:\absolute\scores\adjudication-plan.json `
   --seed 20260830 `
   --out C:\absolute\results\report.json
 ```
 
-Omit `--adjudicator-scores` when the plan has no targets. The output path must not already exist. Here `score --seed` is the bootstrap seed; the harness performs exactly 10,000 hierarchical-bootstrap draws.
+When targets exist, final scoring requires the same canonical version-2 plan bytes that passed `adjudication-check`; it compares both decoded structure and exact bytes against a plan regenerated from the immutable public bundle and exact two initial files. Omit `adjudication-check`, `score --adjudicator-scores`, and `score --adjudication-plan` when there are no targets; supplying a plan without targets is invalid. The score output path must not already exist. Here `score --seed` is the bootstrap seed; the harness performs exactly 10,000 hierarchical-bootstrap draws. `score` deliberately preserves its existing audit behavior: a missing, incompatible, reformatted, or mismatched plan and well-formed scorer records that fail contract/coverage validation produce a saved protocol-invalid report with explicit errors rather than erasing the failed attempt. Missing, unreadable, malformed-JSON, or invalid-UTF-8 scorer inputs abort before a report is created. The separate check is the fail-fast gate before allocating that final path.
 
 ## Output layout
 
@@ -133,7 +151,7 @@ eval-run/
 
 The public scoring bundle has exactly four root files—`bundle.json`, `RUBRIC.md`, `scorer.schema.json`, and the immutable `score-template.jsonl`—plus exactly one `packets/<blind-id>.json` regular file for every listed blind ID; no other file or directory is accepted. When output is present, its blind packet carries the exact raw response bytes as Base64 plus SHA-256 and byte count, alongside the parsed response or parse errors; missing output is represented explicitly. The allocator-only map binds blind IDs back to trials; retains the HMAC key and both keyed orders; and embeds and hashes the operator config and summary, the exact complete operator-chain manifest, and the allocation, raw-response, packet, and complete public-bundle hashes.
 
-`report.json` records all seeds, the blind-key commitment (never the key), the fixed scoring configuration, sanitized operator configuration and outcomes, fixture/treatment hashes, allocation and private-map hashes, the exact operator-chain and public-bundle manifests, raw-response and blind-packet hashes, deterministic adjudication targets, and each scorer file's role, stable scorer ID, covered blind IDs, hash, and byte count. It reports initial-pair exact agreement and agreement within one point, and includes the bootstrap seed and iteration count.
+`adjudication-plan.json` binds the public-bundle manifest and both initial scorer manifests to the treatment-blind target templates. `report.json` records adjudication contract version 2.0 and attests whether a plan was required/provided, its SHA-256, byte count, target count, schema version, and contract version. It also records all seeds, the blind-key commitment (never the key), the fixed scoring configuration, sanitized operator configuration and outcomes, fixture/treatment hashes, allocation and private-map hashes, the exact operator-chain and public-bundle manifests, raw-response and blind-packet hashes, deterministic adjudication targets, and each scorer file's role, stable scorer ID, covered blind IDs, hash, and byte count. It reports initial-pair exact agreement and agreement within one point, and includes the bootstrap seed and iteration count. Plan and scorer bytes are rechecked before the report is returned.
 
 ## Acceptance logic
 
@@ -141,7 +159,7 @@ The deterministic scorer checks the support label, eligible counts and IDs, coun
 
 The absolute skill floor includes mean rubric scores of at least 3/4 for `independence_counting`, `promotion_handling`, `counterevidence`, `wtp_discipline`, `provenance_privacy`, `evidence_ceiling`, **and `decision_quality`**. See the protocol for every gate.
 
-Critical adjudication is based on occurrence, not matching codes. Initial occurrence disagreement deterministically targets that response for one third vote; the resulting three-person strict majority decides occurrence. When the initial scorers agree, no critical adjudicator vote is used. When occurrence reaches a majority, all reported codes are retained and code disagreement remains visible. For ratings, the third value affects only dimensions with an initial gap of at least 2; undisputed dimensions retain the mean of the two initial ratings. Reliability is computed only from the initial pair.
+Critical adjudication is based on occurrence, not matching codes. Initial occurrence disagreement deterministically targets that response for one third vote; the resulting three-person strict majority decides occurrence. When the initial scorers agree, the adjudicator must leave `critical_failures` empty and no third vote is used. When occurrence reaches a majority, all reported codes are retained and code disagreement remains visible. For ratings, the adjudicator supplies values only for dimensions with an initial gap of at least 2; every other rating is `null`, and undisputed dimensions retain the mean of the two initial ratings. Reliability is computed only from the initial pair. The shared scorer schema exposes the structural integer-or-null union; the dependency-free harness enforces the stricter packet- and plan-dependent role rules.
 
 ## Content-addressed chain
 

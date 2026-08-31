@@ -46,7 +46,7 @@ Keep a relevant counterexample even when it weakens the recommendation.
 
 Capture one observed-account unit per ledger record. For a comment, store that comment's permalink and the minimum complete relevant passage, not the whole thread as if one account wrote it. Preserve the thread URL so thread-level diversity can be measured.
 
-The excerpt must be a literal, short substring of `captured_text` within both the 25-word and 500-character ceilings. Paraphrases belong in the hypothesis, not the excerpt. Store engagement only as timestamped context; the scoring algorithm ignores it.
+The excerpt must be a literal, short substring of `captured_text` within both the 25-word and 500-character ceilings. Paraphrases belong in the hypothesis, not the excerpt. Before publication, compare each ledger or direct structured citation value to its source case- and punctuation-sensitively; do not grammar-correct, add an article, change capitalization, or append an ellipsis inside the quoted value. Generated Markdown may apply only the documented deterministic escaping and NFKC/whitespace display normalization, so compare the underlying ledger value rather than the escaped Markdown bytes and confirm that the visible wording is not semantically altered. Store engagement only as timestamped context; the scoring algorithm ignores it.
 
 Pseudonymize account handles with the study's private HMAC key and the observed platform (`author-key --study-dir <study> --platform <platform>`). The platform namespace prevents an equal spelling from producing the same key across platforms. Never publish `.author-key`. Use `unknown` for deleted or unavailable accounts; unknown records never add distinct-author count. A pseudonymous key does not prove a unique person and public links may still reveal account names.
 
@@ -56,15 +56,16 @@ Use a direct canonical permalink with no credential, session, signature, or pers
 
 Link copies with `repost_of`. Also consider two sources dependent when they repeat substantively identical text, quote the same underlying source, or are cross-posts of one submission. The audit auto-collapses exact normalized text only at 80 characters **and** 12 words, both inclusive. Equal text meeting 20 characters **and** 4 words but failing either hard condition warns for review rather than auto-merging boilerplate. All hard/transitive unions finish before short-exact review. An already joined match does not warn, while `independent` resolves only its pair and is not transitive. The auditor emits one deterministic unresolved pair per short-text class per run; document it and rerun until no pair remains. Fuzzy candidates likewise warn. Resolve each warning with a documented `same_source` or `independent` duplicate review.
 
-A duplicate group counts once for source, author, and thread recurrence. Leave all records in the ledger so the collapse is auditable.
+A duplicate group counts once for source, author, and thread recurrence. Leave all records in the private ledger so the collapse is auditable. Public details for an all-public group include its date-selected origin and collapse mechanism. If any member is non-public, the public result uses a lexical source-ID representative and exposes only group source-ID membership, aggregate counts, and a generic withheld-details marker; it does not expose chronology, exact/fuzzy comparison results, similarity percentages, or review reasons.
 
 ## 6. Separate observation, inference, and decision
 
-- Observation: exactly one short literal public-source excerpt, bound to that source alone.
-- Inference: a falsifiable interpretation across observations.
+- Public observation: exactly one short literal public-source excerpt, bound to that source alone. `research-notes.json.observations` accepts only this public form.
+- Supplied-private signal evidence and provenance: retain the source in the ledger and signal citations, but do not put it in research-note observations. In public output use only its source ID, opaque record reference, caller-declared file hash, null excerpt, controlled source-ID category membership, and aggregate classifications/counts. Withhold its publication date, per-record flags, and evidence-type detail. Private text must not be quoted, summarized, or closely paraphrased into the public result.
+- Inference: a falsifiable interpretation across the eligible evidence, recorded against signal IDs rather than as a private-source observation.
 - Decision: what to build, test, or investigate next.
 
-The generated report keeps those layers separate. A “recurring” label describes recurrence in the collected sample only.
+The generated report keeps those layers separate. An evidence label, a WTP level, and an action state answer different questions. Apply action definitions and decision criteria declared before search. If `proceed` explicitly means authorizing a bounded validation, experiment, or pilot and every declared criterion is met, use it for exactly that action. Otherwise a recommendation to validate maps to `validate_first`, not `proceed`; never use `proceed` merely as shorthand for continuing research. Recurring support or recurring WTP alone does not satisfy a stronger commitment standard, especially when counterevidence or substitution risk remains. A “recurring” label describes recurrence in the collected sample only.
 
 ## 7. Seek disconfirmation
 

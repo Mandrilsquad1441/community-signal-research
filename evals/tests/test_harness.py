@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -112,6 +113,8 @@ def complete_run(run_dir: Path, *, replicates: int = 1, seed: int = 321) -> dict
                 "resolved_path": "synthetic-codex",
                 "binary_sha256": "0" * 64,
                 "version_output": "synthetic-codex 1.0",
+                "exec_help_sha256": "2" * 64,
+                "request_seed_options": [],
             },
             "model_catalog_entry": {"slug": "test-model"},
             "model_catalog_raw_sha256": "1" * 64,
@@ -121,7 +124,7 @@ def complete_run(run_dir: Path, *, replicates: int = 1, seed: int = 321) -> dict
             "temperature": "unset",
             "top_p": "unset",
             "max_output_tokens": "unset",
-            "request_seed": "unsupported",
+            "request_seed": harness.REQUEST_SEED_STATUS,
             "sandbox": "read-only",
             "network_search": False,
             "ephemeral": True,
@@ -158,7 +161,7 @@ def complete_run(run_dir: Path, *, replicates: int = 1, seed: int = 321) -> dict
             "condition": trial["condition"],
             "allocated_model_seed": trial["model_seed"],
             "model_seed_applied": False,
-            "model_seed_note": "synthetic test operator",
+            "model_seed_note": harness.MODEL_SEED_NOTE,
             "started_at": "2026-08-30T00:00:00Z",
             "prompt_sha256": harness.sha256_file(prompt_path),
             "allowed_file_hashes": trial["trial_file_hashes"],
@@ -223,6 +226,7 @@ def write_score_file(
     rating_overrides: dict[tuple[str, str], int] | None = None,
     critical_overrides: dict[str, list[str]] | None = None,
     blind_ids: set[str] | None = None,
+    assigned_dimensions: dict[str, set[str]] | None = None,
 ) -> None:
     bundle = json.loads((public_dir / "bundle.json").read_text(encoding="utf-8"))
     lines: list[str] = []
@@ -230,10 +234,15 @@ def write_score_file(
         if blind_ids is not None and blind_id not in blind_ids:
             continue
         packet = json.loads((public_dir / "packets" / f"{blind_id}.json").read_text(encoding="utf-8"))
+        assigned = (
+            set(packet["applicable_rubric_dimensions"])
+            if assigned_dimensions is None
+            else assigned_dimensions.get(blind_id, set())
+        )
         ratings = {
             dimension: (
                 (rating_overrides or {}).get((blind_id, dimension), rating)
-                if dimension in packet["applicable_rubric_dimensions"]
+                if dimension in assigned
                 else None
             )
             for dimension in harness.DIMENSIONS
@@ -272,7 +281,7 @@ class HarnessTests(unittest.TestCase):
     def test_suite_verifies_and_covers_required_adversarial_tags(self) -> None:
         result = harness.verify_suite()
         self.assertTrue(result["ok"], result["errors"])
-        self.assertEqual(8, result["case_count"])
+        self.assertEqual(len(harness.case_index()), result["case_count"])
         self.assertTrue(harness.REQUIRED_ADVERSARIAL_TAGS <= set(result["adversarial_tags"]))
 
     def test_oracle_perfect_structured_responses_receive_all_hard_points(self) -> None:
@@ -290,12 +299,13 @@ class HarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             run_dir = Path(temporary) / "run"
             result = harness.prepare_trials(run_dir, replicates=1, seed=123)
-            self.assertEqual(16, result["trial_count"])
+            expected_case_count = len(harness.case_index())
+            self.assertEqual(2 * expected_case_count, result["trial_count"])
             allocation = json.loads((run_dir / "allocation.private.json").read_text(encoding="utf-8"))
             by_pair: dict[str, list[dict]] = {}
             for trial in allocation["trials"]:
                 by_pair.setdefault(trial["pair_id"], []).append(trial)
-            self.assertEqual(8, len(by_pair))
+            self.assertEqual(expected_case_count, len(by_pair))
             for pair in by_pair.values():
                 self.assertEqual({"baseline", "skill"}, {item["condition"] for item in pair})
                 self.assertEqual(1, len({item["model_seed"] for item in pair}))
@@ -429,6 +439,16 @@ class HarnessTests(unittest.TestCase):
         mutations = [
             (lambda item: item.__setitem__("extra", True), "wrong top-level shape"),
             (lambda item: item.__setitem__("scorer_id", "x" * 81), "1 to 80"),
+            (lambda item: item.__setitem__("scorer_id", "   "), "trimmed nonblank"),
+            (lambda item: item.__setitem__("scorer_id", " scorer-a"), "trimmed nonblank"),
+            (lambda item: item.__setitem__("scorer_id", "scorer\nother"), "control characters"),
+            (lambda item: item.__setitem__("scorer_id", "scorer\tother"), "control characters"),
+            (lambda item: item.__setitem__("scorer_id", "scorer\u0085other"), "control characters"),
+            (lambda item: item.__setitem__("scorer_id", "scorer\u2028other"), "line separators"),
+            (lambda item: item.__setitem__("scorer_id", "scorer\u2029other"), "line separators"),
+            (lambda item: item.__setitem__("scorer_id", "REPLACE"), "unreplaced REPLACE"),
+            (lambda item: item.__setitem__("scorer_id", "REPLACE_WITH_STABLE_ID"), "unreplaced REPLACE"),
+            (lambda item: item.__setitem__("scorer_id", " REPLACE_WITH_STABLE_ID "), "unreplaced REPLACE"),
             (lambda item: item.__setitem__("blind_id", "blind-NOTHEX"), "invalid format"),
             (lambda item: item.__setitem__("case_id", "CASE-01"), "invalid format"),
             (lambda item: item["ratings"].__setitem__("decision_quality", 5), "decision_quality"),
@@ -436,6 +456,9 @@ class HarnessTests(unittest.TestCase):
                 lambda item: item.__setitem__("critical_failures", ["UNSUPPORTED_WTP", "UNSUPPORTED_WTP"]),
                 "invalid or duplicate",
             ),
+            (lambda item: item.__setitem__("rationale", "REPLACE_WITH_RATIONALE"), "unreplaced REPLACE"),
+            (lambda item: item.__setitem__("rationale", " \t "), "nonblank"),
+            (lambda item: item.__setitem__("rationale", " REPLACE_WITH_RATIONALE "), "unreplaced REPLACE"),
             (lambda item: item.__setitem__("rationale", "x" * 2001), "1 to 2000"),
         ]
         for mutate, expected_error in mutations:
@@ -443,6 +466,108 @@ class HarnessTests(unittest.TestCase):
             mutate(candidate)
             errors = harness.validate_score_record(candidate, packet)
             self.assertTrue(any(expected_error in error for error in errors), errors)
+
+    def test_static_scorer_schema_matches_manual_identity_and_sentinel_rules(self) -> None:
+        schema = json.loads(harness.SCORER_SCHEMA_PATH.read_text(encoding="utf-8"))
+        scorer_rule = schema["properties"]["scorer_id"]
+        scorer_pattern = re.compile(scorer_rule["pattern"])
+        scorer_sentinel = re.compile(scorer_rule["not"]["pattern"])
+        rationale_sentinel = re.compile(
+            schema["properties"]["rationale"]["not"]["pattern"]
+        )
+
+        self.assertIsNotNone(scorer_pattern.search("scorer-a"))
+        for value in (
+            "scorer\nother",
+            "scorer\tother",
+            "scorer\u0085other",
+            "scorer\u2028other",
+            "scorer\u2029other",
+        ):
+            with self.subTest(value=repr(value)):
+                self.assertIsNone(scorer_pattern.search(value))
+        self.assertIsNotNone(scorer_sentinel.search("REPLACE_WITH_STABLE_ID"))
+        self.assertIsNotNone(rationale_sentinel.search("  REPLACE_WITH_RATIONALE"))
+
+    def test_targeted_score_validator_enforces_sparse_assignments_and_critical_scope(self) -> None:
+        packet = {
+            "blind_id": "blind-" + "0" * 32,
+            "case_id": "case-01-duplicate-reposts",
+            "applicable_rubric_dimensions": list(harness.DIMENSIONS),
+        }
+        disputed = "auditability"
+        record = {
+            "schema_version": "1.0",
+            "scorer_id": "scorer-adjudicator",
+            "blind_id": packet["blind_id"],
+            "case_id": packet["case_id"],
+            "ratings": {
+                dimension: (3 if dimension == disputed else None)
+                for dimension in harness.DIMENSIONS
+            },
+            "critical_failures": [],
+            "rationale": "Only the assigned auditability dispute is rated.",
+        }
+        self.assertEqual(
+            [],
+            harness.validate_score_record(
+                record,
+                packet,
+                assigned_dimensions={disputed},
+                critical_occurrence_assigned=False,
+            ),
+        )
+
+        missing_dispute = copy.deepcopy(record)
+        missing_dispute["ratings"][disputed] = None
+        self.assertTrue(
+            any(
+                f"{disputed} must be an integer" in error
+                for error in harness.validate_score_record(
+                    missing_dispute,
+                    packet,
+                    assigned_dimensions={disputed},
+                    critical_occurrence_assigned=False,
+                )
+            )
+        )
+
+        rescored_settled = copy.deepcopy(record)
+        rescored_settled["ratings"]["decision_quality"] = 4
+        self.assertTrue(
+            any(
+                "decision_quality must be null because it is not assigned" in error
+                for error in harness.validate_score_record(
+                    rescored_settled,
+                    packet,
+                    assigned_dimensions={disputed},
+                    critical_occurrence_assigned=False,
+                )
+            )
+        )
+
+        unassigned_critical = copy.deepcopy(record)
+        unassigned_critical["critical_failures"] = ["OTHER_CRITICAL_FAILURE"]
+        self.assertTrue(
+            any(
+                "critical_failures must be empty" in error
+                for error in harness.validate_score_record(
+                    unassigned_critical,
+                    packet,
+                    assigned_dimensions={disputed},
+                    critical_occurrence_assigned=False,
+                )
+            )
+        )
+        self.assertEqual(
+            [],
+            harness.validate_score_record(
+                unassigned_critical,
+                packet,
+                assigned_dimensions={disputed},
+                critical_occurrence_assigned=True,
+            ),
+        )
 
     def test_raw_output_is_authoritative_even_if_repaired_response_json_exists(self) -> None:
         case = harness.case_index()["case-01-duplicate-reposts"]
@@ -636,7 +761,7 @@ class HarnessTests(unittest.TestCase):
                 score_paths.append(score_path)
             report = harness.aggregate_scores(public_dir, private_map, score_paths, seed=999)
             self.assertEqual([], report["validation_errors"])
-            self.assertEqual(16, len(report["trial_results"]))
+            self.assertEqual(2 * len(harness.case_index()), len(report["trial_results"]))
             self.assertTrue(all(row["total_score"] == 100.0 for row in report["trial_results"]))
             self.assertFalse(report["status"]["protocol_valid"])
             self.assertEqual(0.0, report["paired_effect"]["mean_lift"])
@@ -671,12 +796,24 @@ class HarnessTests(unittest.TestCase):
             adjudicator = root / "adjudicator.jsonl"
             write_score_file(public_dir, first, "scorer-1", critical_overrides={blind_id: [codes[0]]})
             write_score_file(public_dir, second, "scorer-2")
+            plan = harness.make_adjudication_plan(public_dir, [first, second])
+            plan_path = root / "adjudication-plan.json"
+            harness.write_json(plan_path, plan)
+            target = next(item for item in plan["targets"] if item["blind_id"] == blind_id)
+            self.assertEqual([], target["disputed_dimensions"])
+            self.assertTrue(target["critical_occurrence_disputed"])
+            self.assertEqual(
+                "REPLACE_WITH_ARRAY_OF_ZERO_OR_MORE_SCORER_SCHEMA_CODES",
+                target["record_template"]["critical_failures"],
+            )
+            self.assertTrue(all(value is None for value in target["record_template"]["ratings"].values()))
             write_score_file(
                 public_dir,
                 adjudicator,
                 "scorer-3",
                 critical_overrides={blind_id: [codes[1]]},
                 blind_ids={blind_id},
+                assigned_dimensions={blind_id: set()},
             )
             report = harness.aggregate_scores(
                 public_dir,
@@ -684,6 +821,7 @@ class HarnessTests(unittest.TestCase):
                 [first, second],
                 seed=999,
                 adjudicator_score_paths=[adjudicator],
+                adjudication_plan_path=plan_path,
             )
             row = next(item for item in report["trial_results"] if item["blind_id"] == blind_id)
             self.assertEqual(set(codes), set(row["critical_failures"]))
@@ -712,6 +850,22 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(0.0, report["interrater"]["exact_agreement_rate"])
             self.assertEqual(1.0, report["interrater"]["within_one_rate"])
 
+            zero_target_plan = harness.make_adjudication_plan(public_dir, [first, second])
+            self.assertEqual(0, zero_target_plan["target_count"])
+            zero_target_plan_path = root / "unexpected-plan.json"
+            harness.write_json(zero_target_plan_path, zero_target_plan)
+            unexpected = harness.aggregate_scores(
+                public_dir,
+                private_map,
+                [first, second],
+                seed=999,
+                adjudication_plan_path=zero_target_plan_path,
+            )
+            self.assertFalse(unexpected["status"]["protocol_valid"])
+            self.assertTrue(
+                any("plan must be omitted" in error for error in unexpected["validation_errors"])
+            )
+
     def test_decision_quality_is_an_explicit_absolute_skill_floor_and_config_is_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -729,7 +883,10 @@ class HarnessTests(unittest.TestCase):
             report = harness.aggregate_scores(public_dir, private_map, [first, second], seed=999)
             self.assertFalse(report["gates"]["absolute_skill_acceptance"]["primary_dimension_means_at_least_3"])
             self.assertEqual(2.0, report["condition_summary"]["skill"]["dimension_means"]["decision_quality"])
-            self.assertEqual("test-model", report["manifest"]["configuration"]["operator"]["model"])
+            public_operator = report["manifest"]["configuration"]["operator"]
+            self.assertEqual("test-model", public_operator["model"])
+            self.assertEqual("2" * 64, public_operator["codex"]["exec_help_sha256"])
+            self.assertEqual([], public_operator["codex"]["request_seed_options"])
             self.assertIsNotNone(report["manifest"]["hashes"]["operator_config_sha256"])
 
     def test_blind_rejects_frozen_fixture_hash_drift(self) -> None:
@@ -769,6 +926,22 @@ class HarnessTests(unittest.TestCase):
             del config["model"]
             harness.write_json(config_path, config)
             with self.assertRaisesRegex(ValueError, "operator config is incomplete"):
+                harness.make_blind_bundle(
+                    run_dir,
+                    root / "public",
+                    root / "private" / "map.json",
+                    seed=654,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_dir = root / "run"
+            complete_run(run_dir)
+            config_path = run_dir / "operator-config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["codex"]["request_seed_options"] = ["--seed"]
+            harness.write_json(config_path, config)
+            with self.assertRaisesRegex(ValueError, "seed-capable"):
                 harness.make_blind_bundle(
                     run_dir,
                     root / "public",
@@ -822,6 +995,62 @@ class HarnessTests(unittest.TestCase):
             response_path.write_bytes(response_path.read_bytes() + b" ")
             with self.assertRaisesRegex(ValueError, "response hash mismatch"):
                 harness.aggregate_scores(public_dir, private_map, [first, second], seed=999)
+
+    def test_blind_rejects_contradictory_or_seeded_operator_records(self) -> None:
+        mutations = (
+            (
+                "config declaration",
+                lambda config, started, execution: config.__setitem__("request_seed", "applied"),
+                "canonical unsupported declaration",
+            ),
+            (
+                "applied flag",
+                lambda config, started, execution: (
+                    started.__setitem__("model_seed_applied", True),
+                    execution.__setitem__("model_seed_applied", True),
+                ),
+                "model seed must be recorded as unapplied",
+            ),
+            (
+                "seed note",
+                lambda config, started, execution: (
+                    started.__setitem__("model_seed_note", "seed applied"),
+                    execution.__setitem__("model_seed_note", "seed applied"),
+                ),
+                "model seed note is not the canonical unsupported declaration",
+            ),
+            (
+                "seed argv",
+                lambda config, started, execution: (
+                    started["argv"].extend(["--seed", "123"]),
+                    execution["argv"].extend(["--seed", "123"]),
+                ),
+                "invocation argv contains an unsupported request-seed option",
+            ),
+        )
+        for label, mutate, expected_error in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                run_dir = root / "run"
+                allocation = complete_run(run_dir)
+                config_path = run_dir / "operator-config.json"
+                trial_dir = run_dir / "dispatch" / allocation["trials"][0]["trial_id"]
+                started_path = trial_dir / "execution.started.json"
+                execution_path = trial_dir / "execution.json"
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+                started = json.loads(started_path.read_text(encoding="utf-8"))
+                execution = json.loads(execution_path.read_text(encoding="utf-8"))
+                mutate(config, started, execution)
+                harness.write_json(config_path, config)
+                harness.write_json(started_path, started)
+                harness.write_json(execution_path, execution)
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    harness.make_blind_bundle(
+                        run_dir,
+                        root / "public",
+                        root / "private" / "map.json",
+                        seed=654,
+                    )
 
     def test_initial_scorer_files_must_be_separate_stable_distinct_and_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -879,9 +1108,26 @@ class HarnessTests(unittest.TestCase):
                 rating_overrides={(blind_id, disputed): 2, (blind_id, undisputed): 3},
             )
             plan = harness.make_adjudication_plan(public_dir, [first, second])
+            plan_path = root / "adjudication-plan.json"
+            harness.write_json(plan_path, plan)
+            self.assertEqual("2.0", plan["schema_version"])
+            self.assertEqual("2.0", plan["adjudication_contract_version"])
             self.assertEqual(1, plan["target_count"])
             self.assertEqual(blind_id, plan["targets"][0]["blind_id"])
+            self.assertEqual(packet["case_id"], plan["targets"][0]["case_id"])
+            self.assertEqual(f"packets/{blind_id}.json", plan["targets"][0]["packet_path"])
             self.assertEqual([disputed], plan["targets"][0]["disputed_dimensions"])
+            template = plan["targets"][0]["record_template"]
+            self.assertEqual("REPLACE_WITH_INTEGER_0_TO_4", template["ratings"][disputed])
+            self.assertTrue(
+                all(
+                    value is None
+                    for dimension, value in template["ratings"].items()
+                    if dimension != disputed
+                )
+            )
+            self.assertEqual([], template["critical_failures"])
+            self.assertEqual(harness.ADJUDICATOR_CONTRACT, plan["adjudicator_contract"])
             self.assertEqual(
                 [("initial", "scorer-a"), ("initial", "scorer-b")],
                 [
@@ -890,10 +1136,13 @@ class HarnessTests(unittest.TestCase):
                 ],
             )
             self.assertTrue(all(item["sha256"] for item in plan["initial_scorer_files"]))
-            self.assertNotIn("condition", json.dumps(plan, sort_keys=True))
+            serialized_plan = json.dumps(plan, sort_keys=True)
+            for forbidden in ("condition", "trial_id", "pair_id", "replicate", "baseline", "skill"):
+                self.assertNotIn(forbidden, serialized_plan)
 
             missing = harness.aggregate_scores(public_dir, private_map, [first, second], seed=999)
             self.assertTrue(any("expected exactly one targeted adjudicator" in error for error in missing["validation_errors"]))
+            self.assertTrue(any("adjudication plan is required" in error for error in missing["validation_errors"]))
 
             adjudicator = root / "adjudicator.jsonl"
             untargeted_blind_id = next(item for item in bundle["blind_order"] if item != blind_id)
@@ -910,27 +1159,431 @@ class HarnessTests(unittest.TestCase):
                 [first, second],
                 seed=999,
                 adjudicator_score_paths=[adjudicator],
+                adjudication_plan_path=plan_path,
             )
             self.assertTrue(any("unplanned record" in error for error in unplanned["validation_errors"]))
             self.assertTrue(
                 any("expected exactly one targeted adjudicator" in error for error in unplanned["validation_errors"])
             )
 
-            write_score_file(public_dir, adjudicator, "scorer-c", rating=0, blind_ids={blind_id})
+            write_score_file(
+                public_dir,
+                adjudicator,
+                "scorer-c",
+                rating=0,
+                blind_ids={blind_id},
+                assigned_dimensions={blind_id: {disputed}},
+            )
+            missing_plan_report_path = root / "missing-plan-report.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                missing_plan_exit = harness.main(
+                    [
+                        "score",
+                        "--public-bundle",
+                        str(public_dir),
+                        "--private-map",
+                        str(private_map),
+                        "--initial-scores",
+                        str(first),
+                        "--initial-scores",
+                        str(second),
+                        "--adjudicator-scores",
+                        str(adjudicator),
+                        "--seed",
+                        "999",
+                        "--out",
+                        str(missing_plan_report_path),
+                    ]
+                )
+            self.assertEqual(0, missing_plan_exit)
+            missing_plan_report = json.loads(missing_plan_report_path.read_text(encoding="utf-8"))
+            self.assertFalse(missing_plan_report["status"]["protocol_valid"])
+            self.assertTrue(
+                any("adjudication plan is required" in error for error in missing_plan_report["validation_errors"])
+            )
+
             report = harness.aggregate_scores(
                 public_dir,
                 private_map,
                 [first, second],
                 seed=999,
                 adjudicator_score_paths=[adjudicator],
+                adjudication_plan_path=plan_path,
             )
             self.assertEqual([], report["validation_errors"])
+            self.assertEqual("2.0", report["adjudication_contract_version"])
+            plan_manifest = report["manifest"]["hashes"]["adjudication_plan"]
+            self.assertEqual(hashlib.sha256(plan_path.read_bytes()).hexdigest(), plan_manifest["sha256"])
+            self.assertEqual(len(plan_path.read_bytes()), plan_manifest["byte_count"])
+            self.assertEqual(1, plan_manifest["target_count"])
             row = next(item for item in report["trial_results"] if item["blind_id"] == blind_id)
             self.assertEqual(2.0, row["dimension_scores"][disputed])
             self.assertEqual(3.5, row["dimension_scores"][undisputed])
             self.assertEqual(
                 ["initial", "initial", "adjudicator"],
                 [item["role"] for item in report["manifest"]["hashes"]["scorer_files"]],
+            )
+
+            reformatted_plan_path = root / "reformatted-plan.json"
+            reformatted_plan_path.write_text(json.dumps(plan) + "\n", encoding="utf-8", newline="\n")
+            reformatted = harness.aggregate_scores(
+                public_dir,
+                private_map,
+                [first, second],
+                seed=999,
+                adjudicator_score_paths=[adjudicator],
+                adjudication_plan_path=reformatted_plan_path,
+            )
+            self.assertFalse(reformatted["status"]["protocol_valid"])
+            self.assertFalse(
+                any("structure does not match" in error for error in reformatted["validation_errors"])
+            )
+            self.assertTrue(any("plan bytes do not match" in error for error in reformatted["validation_errors"]))
+
+            dense_v1_plan = copy.deepcopy(plan)
+            dense_v1_plan["schema_version"] = "1.0"
+            dense_v1_plan.pop("adjudication_contract_version")
+            dense_v1_path = root / "dense-v1-plan.json"
+            harness.write_json(dense_v1_path, dense_v1_plan)
+            incompatible = harness.aggregate_scores(
+                public_dir,
+                private_map,
+                [first, second],
+                seed=999,
+                adjudicator_score_paths=[adjudicator],
+                adjudication_plan_path=dense_v1_path,
+            )
+            self.assertFalse(incompatible["status"]["protocol_valid"])
+            self.assertTrue(any("plan structure does not match" in error for error in incompatible["validation_errors"]))
+
+    def test_score_rejects_aba_initial_scorer_swap_during_plan_derivation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_dir = root / "run"
+            public_dir = root / "public"
+            private_map = root / "private" / "map.json"
+            complete_run(run_dir)
+            harness.make_blind_bundle(run_dir, public_dir, private_map, seed=654)
+            blind_id = json.loads((public_dir / "bundle.json").read_text(encoding="utf-8"))["blind_order"][0]
+            packet = json.loads((public_dir / "packets" / f"{blind_id}.json").read_text(encoding="utf-8"))
+            disputed = packet["applicable_rubric_dimensions"][0]
+            first = root / "initial-a.jsonl"
+            second = root / "initial-b.jsonl"
+            adjudicator = root / "adjudicator.jsonl"
+            plan_path = root / "adjudication-plan-b.json"
+            write_score_file(public_dir, first, "initial-a", rating=4)
+            write_score_file(
+                public_dir,
+                second,
+                "initial-b",
+                rating=4,
+                rating_overrides={(blind_id, disputed): 2},
+            )
+            scorer_a_bytes = second.read_bytes()
+            write_score_file(
+                public_dir,
+                second,
+                "initial-b",
+                rating=4,
+                rating_overrides={(blind_id, disputed): 1},
+            )
+            scorer_b_bytes = second.read_bytes()
+            plan_b = harness.make_adjudication_plan(public_dir, [first, second])
+            harness.write_json(plan_path, plan_b)
+            second.write_bytes(scorer_a_bytes)
+            write_score_file(
+                public_dir,
+                adjudicator,
+                "adjudicator",
+                rating=3,
+                blind_ids={blind_id},
+                assigned_dimensions={blind_id: {disputed}},
+            )
+
+            original_validate = harness.validate_scorer_files
+            calls = [0]
+
+            def substitute_only_during_plan_derivation(*args, **kwargs):
+                calls[0] += 1
+                if calls[0] != 2:
+                    return original_validate(*args, **kwargs)
+                second.write_bytes(scorer_b_bytes)
+                try:
+                    return original_validate(*args, **kwargs)
+                finally:
+                    second.write_bytes(scorer_a_bytes)
+
+            with mock.patch.object(
+                harness,
+                "validate_scorer_files",
+                side_effect=substitute_only_during_plan_derivation,
+            ):
+                report = harness.aggregate_scores(
+                    public_dir,
+                    private_map,
+                    [first, second],
+                    seed=999,
+                    adjudicator_score_paths=[adjudicator],
+                    adjudication_plan_path=plan_path,
+                )
+
+            self.assertEqual(scorer_a_bytes, second.read_bytes())
+            self.assertFalse(report["status"]["protocol_valid"])
+            self.assertTrue(
+                any(
+                    "initial scorer files changed between score binding and adjudication plan derivation" in error
+                    for error in report["validation_errors"]
+                )
+            )
+
+    def test_adjudication_check_binds_plan_and_rejects_invalid_targeted_files_without_a_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_dir = root / "run"
+            public_dir = root / "public"
+            private_map = root / "private" / "map.json"
+            complete_run(run_dir)
+            harness.make_blind_bundle(run_dir, public_dir, private_map, seed=654)
+            bundle = json.loads((public_dir / "bundle.json").read_text(encoding="utf-8"))
+            blind_id = bundle["blind_order"][0]
+            packet = json.loads((public_dir / "packets" / f"{blind_id}.json").read_text(encoding="utf-8"))
+            disputed = packet["applicable_rubric_dimensions"][0]
+            first = root / "initial-a.jsonl"
+            second = root / "initial-b.jsonl"
+            adjudicator = root / "adjudicator.jsonl"
+            plan_path = root / "adjudication-plan.json"
+            write_score_file(public_dir, first, "scorer-a", rating=4)
+            write_score_file(
+                public_dir,
+                second,
+                "scorer-b",
+                rating=4,
+                rating_overrides={(blind_id, disputed): 2},
+            )
+            plan = harness.make_adjudication_plan(public_dir, [first, second])
+            harness.write_json(plan_path, plan)
+            write_score_file(
+                public_dir,
+                adjudicator,
+                "scorer-c",
+                rating=3,
+                blind_ids={blind_id},
+                assigned_dimensions={blind_id: {disputed}},
+            )
+
+            # The treatment-bearing map is outside this command's trust inputs.
+            private_map.write_text("not used by adjudication-check\n", encoding="utf-8")
+            result = harness.check_adjudication(public_dir, plan_path, [first, second], [adjudicator])
+            self.assertTrue(result["ok"])
+            self.assertEqual("2.0", result["adjudication_contract_version"])
+            self.assertEqual(1, result["target_count"])
+            self.assertEqual(1, result["covered_target_count"])
+            self.assertEqual([], result["validation_errors"])
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                exit_code = harness.main(
+                    [
+                        "adjudication-check",
+                        "--public-bundle",
+                        str(public_dir),
+                        "--plan",
+                        str(plan_path),
+                        "--initial-scores",
+                        str(first),
+                        "--initial-scores",
+                        str(second),
+                        "--adjudicator-scores",
+                        str(adjudicator),
+                    ]
+                )
+            self.assertEqual(0, exit_code)
+            self.assertFalse((root / "report.json").exists())
+
+            original_validate = harness.validate_scorer_files
+            plan_calls = [0]
+
+            def mutate_plan_after_validation(*args, **kwargs):
+                validated = original_validate(*args, **kwargs)
+                plan_calls[0] += 1
+                if plan_calls[0] == 2:
+                    plan_path.write_bytes(plan_path.read_bytes() + b" ")
+                return validated
+
+            with mock.patch.object(harness, "validate_scorer_files", side_effect=mutate_plan_after_validation):
+                with self.assertRaisesRegex(ValueError, "locked plan changed"):
+                    harness.check_adjudication(public_dir, plan_path, [first, second], [adjudicator])
+            harness.write_json(plan_path, plan)
+
+            original_adjudicator_bytes = adjudicator.read_bytes()
+            scorer_calls = [0]
+
+            def mutate_scorer_after_validation(*args, **kwargs):
+                validated = original_validate(*args, **kwargs)
+                scorer_calls[0] += 1
+                if scorer_calls[0] == 2:
+                    adjudicator.write_bytes(original_adjudicator_bytes + b"\n")
+                return validated
+
+            with mock.patch.object(harness, "validate_scorer_files", side_effect=mutate_scorer_after_validation):
+                with self.assertRaisesRegex(ValueError, "scorer file changed"):
+                    harness.check_adjudication(public_dir, plan_path, [first, second], [adjudicator])
+            adjudicator.write_bytes(original_adjudicator_bytes)
+
+            tampered_plan = copy.deepcopy(plan)
+            tampered_plan["targets"][0]["disputed_dimensions"] = []
+            tampered_plan_path = root / "tampered-plan.json"
+            harness.write_json(tampered_plan_path, tampered_plan)
+            tampered = harness.check_adjudication(
+                public_dir,
+                tampered_plan_path,
+                [first, second],
+                [adjudicator],
+            )
+            self.assertFalse(tampered["ok"])
+            self.assertTrue(any("locked adjudication plan does not match" in error for error in tampered["validation_errors"]))
+
+            sentinel_record = copy.deepcopy(plan["targets"][0]["record_template"])
+            sentinel_record["ratings"][disputed] = 3
+            sentinel_record["critical_failures"] = []
+            adjudicator.write_text(json.dumps(sentinel_record) + "\n", encoding="utf-8", newline="\n")
+            sentinel = harness.check_adjudication(public_dir, plan_path, [first, second], [adjudicator])
+            self.assertFalse(sentinel["ok"])
+            self.assertTrue(
+                any("scorer_id must be" in error and "unreplaced REPLACE" in error for error in sentinel["validation_errors"])
+            )
+            self.assertTrue(
+                any("rationale must be" in error and "unreplaced REPLACE" in error for error in sentinel["validation_errors"])
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                sentinel_exit = harness.main(
+                    [
+                        "adjudication-check",
+                        "--public-bundle",
+                        str(public_dir),
+                        "--plan",
+                        str(plan_path),
+                        "--initial-scores",
+                        str(first),
+                        "--initial-scores",
+                        str(second),
+                        "--adjudicator-scores",
+                        str(adjudicator),
+                    ]
+                )
+            self.assertEqual(1, sentinel_exit)
+
+            write_score_file(
+                public_dir,
+                adjudicator,
+                "scorer-c",
+                blind_ids={blind_id},
+                assigned_dimensions={blind_id: set()},
+            )
+            invalid = harness.check_adjudication(public_dir, plan_path, [first, second], [adjudicator])
+            self.assertFalse(invalid["ok"])
+            self.assertTrue(any(f"{disputed} must be an integer" in error for error in invalid["validation_errors"]))
+            with contextlib.redirect_stdout(io.StringIO()):
+                invalid_exit = harness.main(
+                    [
+                        "adjudication-check",
+                        "--public-bundle",
+                        str(public_dir),
+                        "--plan",
+                        str(plan_path),
+                        "--initial-scores",
+                        str(first),
+                        "--initial-scores",
+                        str(second),
+                        "--adjudicator-scores",
+                        str(adjudicator),
+                    ]
+                )
+            self.assertEqual(1, invalid_exit)
+            self.assertFalse((root / "report.json").exists())
+
+    def test_adjudication_check_accepts_disjoint_files_and_rejects_cross_file_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_dir = root / "run"
+            public_dir = root / "public"
+            private_map = root / "private" / "map.json"
+            complete_run(run_dir)
+            harness.make_blind_bundle(run_dir, public_dir, private_map, seed=654)
+            blind_order = json.loads((public_dir / "bundle.json").read_text(encoding="utf-8"))["blind_order"]
+            target_ids = blind_order[:2]
+            disputed_by_blind = {
+                blind_id: json.loads(
+                    (public_dir / "packets" / f"{blind_id}.json").read_text(encoding="utf-8")
+                )["applicable_rubric_dimensions"][0]
+                for blind_id in target_ids
+            }
+            first = root / "initial-a.jsonl"
+            second = root / "initial-b.jsonl"
+            adjudicator_a = root / "adjudicator-a.jsonl"
+            adjudicator_b = root / "adjudicator-b.jsonl"
+            plan_path = root / "adjudication-plan.json"
+            write_score_file(public_dir, first, "initial-a", rating=4)
+            write_score_file(
+                public_dir,
+                second,
+                "initial-b",
+                rating=4,
+                rating_overrides={
+                    (blind_id, dimension): 2
+                    for blind_id, dimension in disputed_by_blind.items()
+                },
+            )
+            plan = harness.make_adjudication_plan(public_dir, [first, second])
+            self.assertEqual(2, plan["target_count"])
+            harness.write_json(plan_path, plan)
+            write_score_file(
+                public_dir,
+                adjudicator_a,
+                "adjudicator-a",
+                rating=3,
+                blind_ids={target_ids[0]},
+                assigned_dimensions={target_ids[0]: {disputed_by_blind[target_ids[0]]}},
+            )
+            write_score_file(
+                public_dir,
+                adjudicator_b,
+                "adjudicator-b",
+                rating=3,
+                blind_ids={target_ids[1]},
+                assigned_dimensions={target_ids[1]: {disputed_by_blind[target_ids[1]]}},
+            )
+            disjoint = harness.check_adjudication(
+                public_dir,
+                plan_path,
+                [first, second],
+                [adjudicator_a, adjudicator_b],
+            )
+            self.assertTrue(disjoint["ok"], disjoint["validation_errors"])
+            self.assertEqual(2, disjoint["covered_target_count"])
+
+            write_score_file(
+                public_dir,
+                adjudicator_b,
+                "adjudicator-b",
+                rating=3,
+                blind_ids=set(target_ids),
+                assigned_dimensions={
+                    blind_id: {dimension}
+                    for blind_id, dimension in disputed_by_blind.items()
+                },
+            )
+            overlap = harness.check_adjudication(
+                public_dir,
+                plan_path,
+                [first, second],
+                [adjudicator_a, adjudicator_b],
+            )
+            self.assertFalse(overlap["ok"])
+            self.assertTrue(
+                any(
+                    target_ids[0] in error and "expected exactly one targeted adjudicator record, observed 2" in error
+                    for error in overlap["validation_errors"]
+                )
             )
 
     def test_score_rejects_public_packet_tampering_and_private_hash_drift(self) -> None:
@@ -1138,6 +1791,74 @@ class HarnessTests(unittest.TestCase):
             self.assertNotIn("condition", json.dumps(plan, sort_keys=True))
             report = harness.aggregate_scores(public_dir, private_map, [first, second], seed=999)
             self.assertEqual([], report["validation_errors"])
+
+    def test_adjudication_rejects_packet_swap_after_snapshot_before_parse(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_dir = root / "run"
+            public_dir = root / "public"
+            private_map = root / "private" / "map.json"
+            complete_run(run_dir)
+            harness.make_blind_bundle(run_dir, public_dir, private_map, seed=654)
+            blind_id = json.loads((public_dir / "bundle.json").read_text(encoding="utf-8"))["blind_order"][0]
+            packet_path = public_dir / "packets" / f"{blind_id}.json"
+            original_snapshot = harness.tree_snapshot
+            swapped = [False]
+
+            def snapshot_then_swap(path):
+                snapshot = original_snapshot(path)
+                if Path(path).resolve() == public_dir.resolve() and not swapped[0]:
+                    swapped[0] = True
+                    packet_path.write_bytes(packet_path.read_bytes() + b" ")
+                    os.utime(
+                        packet_path,
+                        ns=(harness.PUBLIC_BUNDLE_MTIME_NS, harness.PUBLIC_BUNDLE_MTIME_NS),
+                    )
+                return snapshot
+
+            with mock.patch.object(harness, "tree_snapshot", side_effect=snapshot_then_swap):
+                with self.assertRaisesRegex(ValueError, "packet bytes do not match the captured public-bundle snapshot"):
+                    harness.load_adjudication_bundle(public_dir, "adjudication test")
+            self.assertTrue(swapped[0])
+
+    def test_score_rejects_bundle_or_packet_swap_after_snapshot_before_parse(self) -> None:
+        for target_kind in ("bundle", "packet"):
+            with self.subTest(target_kind=target_kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                run_dir = root / "run"
+                public_dir = root / "public"
+                private_map = root / "private" / "map.json"
+                complete_run(run_dir)
+                harness.make_blind_bundle(run_dir, public_dir, private_map, seed=654)
+                bundle = json.loads((public_dir / "bundle.json").read_text(encoding="utf-8"))
+                target_path = (
+                    public_dir / "bundle.json"
+                    if target_kind == "bundle"
+                    else public_dir / "packets" / f"{bundle['blind_order'][0]}.json"
+                )
+                original_snapshot = harness.tree_snapshot
+                swapped = [False]
+
+                def snapshot_then_swap(path):
+                    snapshot = original_snapshot(path)
+                    if Path(path).resolve() == public_dir.resolve() and not swapped[0]:
+                        swapped[0] = True
+                        target_path.write_bytes(target_path.read_bytes() + b" ")
+                        os.utime(
+                            target_path,
+                            ns=(harness.PUBLIC_BUNDLE_MTIME_NS, harness.PUBLIC_BUNDLE_MTIME_NS),
+                        )
+                    return snapshot
+
+                expected = (
+                    "bundle index bytes do not match the captured public-bundle snapshot"
+                    if target_kind == "bundle"
+                    else "packet bytes do not match the captured public-bundle snapshot"
+                )
+                with mock.patch.object(harness, "tree_snapshot", side_effect=snapshot_then_swap):
+                    with self.assertRaisesRegex(ValueError, expected):
+                        harness.aggregate_scores(public_dir, private_map, [], seed=999)
+                self.assertTrue(swapped[0])
 
     def test_scoring_and_adjudication_reject_public_metadata_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

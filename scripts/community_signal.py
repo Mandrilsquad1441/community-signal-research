@@ -2197,11 +2197,18 @@ def detect_repost_cycles(source_by_id: dict[str, dict[str, Any]], audit: Audit) 
         while current in source_by_id and current not in completed:
             if current in positions:
                 cycle = chain[positions[current] :] + [current]
-                audit.error(
-                    "REPOST_CYCLE",
-                    f"source-ledger.jsonl:{current}",
-                    "Repost cycle: " + " -> ".join(cycle) + ".",
-                )
+                if any(source_by_id[source_id].get("visibility") != "public" for source_id in cycle):
+                    audit.error(
+                        "NON_PUBLIC_DUPLICATE_INTEGRITY",
+                        f"source-ledger.jsonl:{current}",
+                        "Duplicate linkage involving a non-public source is invalid; inspect the private ledger to correct it. Record-specific linkage details are withheld.",
+                    )
+                else:
+                    audit.error(
+                        "REPOST_CYCLE",
+                        f"source-ledger.jsonl:{current}",
+                        "Repost cycle: " + " -> ".join(cycle) + ".",
+                    )
                 break
             positions[current] = len(chain)
             chain.append(current)
@@ -2213,10 +2220,28 @@ def detect_repost_cycles(source_by_id: dict[str, dict[str, Any]], audit: Audit) 
     for source_id, source in source_by_id.items():
         target = source.get("repost_of")
         if target == source_id:
-            audit.error("REPOST_SELF", f"source-ledger.jsonl:{source_id}.repost_of", "A source cannot repost itself.")
+            if source.get("visibility") != "public":
+                audit.error(
+                    "NON_PUBLIC_DUPLICATE_INTEGRITY",
+                    f"source-ledger.jsonl:{source_id}",
+                    "Duplicate linkage involving a non-public source is invalid; inspect the private ledger to correct it. Record-specific linkage details are withheld.",
+                )
+            else:
+                audit.error("REPOST_SELF", f"source-ledger.jsonl:{source_id}.repost_of", "A source cannot repost itself.")
         elif isinstance(target, str) and target in source_by_id:
             if source_by_id[target].get("repost_of") is not None:
-                audit.error("REPOST_CHAIN", f"source-ledger.jsonl:{source_id}.repost_of", "repost_of must point directly to an origin whose repost_of is null.")
+                next_target = source_by_id[target].get("repost_of")
+                linked_ids = [source_id, target]
+                if isinstance(next_target, str) and next_target in source_by_id:
+                    linked_ids.append(next_target)
+                if any(source_by_id[linked_id].get("visibility") != "public" for linked_id in linked_ids):
+                    audit.error(
+                        "NON_PUBLIC_DUPLICATE_INTEGRITY",
+                        f"source-ledger.jsonl:{source_id}",
+                        "Duplicate linkage involving a non-public source is invalid; inspect the private ledger to correct it. Record-specific linkage details are withheld.",
+                    )
+                else:
+                    audit.error("REPOST_CHAIN", f"source-ledger.jsonl:{source_id}.repost_of", "repost_of must point directly to an origin whose repost_of is null.")
             try:
                 repost_time = datetime.fromisoformat(str(source.get("published_at", "")).replace("Z", "+00:00")).astimezone(timezone.utc)
                 origin_time = datetime.fromisoformat(
@@ -2226,11 +2251,18 @@ def detect_repost_cycles(source_by_id: dict[str, dict[str, Any]], audit: Audit) 
                 pass
             else:
                 if repost_time < origin_time:
-                    audit.error(
-                        "REPOST_TIME_ORDER",
-                        f"source-ledger.jsonl:{source_id}.published_at",
-                        f"A repost cannot predate its declared origin {target!r}.",
-                    )
+                    if source.get("visibility") != "public" or source_by_id[target].get("visibility") != "public":
+                        audit.error(
+                            "NON_PUBLIC_DUPLICATE_INTEGRITY",
+                            f"source-ledger.jsonl:{source_id}",
+                            "Duplicate linkage involving a non-public source is invalid; inspect the private ledger to correct it. Record-specific linkage details are withheld.",
+                        )
+                    else:
+                        audit.error(
+                            "REPOST_TIME_ORDER",
+                            f"source-ledger.jsonl:{source_id}.published_at",
+                            f"A repost cannot predate its declared origin {target!r}.",
+                        )
 
 
 PUBLIC_IDENTITY_MATERIAL_FIELDS = (
@@ -2344,7 +2376,14 @@ def build_duplicate_groups(
         target = source.get("repost_of")
         if isinstance(target, str):
             if target not in source_by_id:
-                audit.error("BAD_REPOST_REF", f"source-ledger.jsonl:{source_id}.repost_of", f"Unknown source ID {target!r}.")
+                if source.get("visibility") != "public":
+                    audit.error(
+                        "NON_PUBLIC_DUPLICATE_INTEGRITY",
+                        f"source-ledger.jsonl:{source_id}",
+                        "Duplicate linkage involving a non-public source is invalid; inspect the private ledger to correct it. Record-specific linkage details are withheld.",
+                    )
+                else:
+                    audit.error("BAD_REPOST_REF", f"source-ledger.jsonl:{source_id}.repost_of", f"Unknown source ID {target!r}.")
             else:
                 union.union(source_id, target)
         for review in source.get("duplicate_reviews", []):
@@ -2426,7 +2465,7 @@ def build_duplicate_groups(
                         audit.error(
                             "PRIVATE_PROVENANCE_CONFLICT",
                             f"source-ledger.jsonl:{source_id}",
-                            f"Private provenance is already used by {owner_id!r} with conflicting fields {changed!r}; use one record per exported unit.",
+                            f"Private provenance is already used by {owner_id!r} with conflicting record data; use one record per exported unit. Record-specific conflict details are withheld.",
                         )
                     union.union(source_id, owner_id)
                 else:
@@ -2500,11 +2539,18 @@ def build_duplicate_groups(
             if missing_pair is not None:
                 break
         if missing_pair is not None:
-            audit.warn(
-                "POSSIBLE_SHORT_EXACT_DUPLICATE",
-                f"source-ledger.jsonl:{missing_pair[0]}/{missing_pair[1]}",
-                "Short captured_text is exactly equal for an unresolved pair; record a pair-specific duplicate_review because independence is not transitive.",
-            )
+            if any(source_by_id[source_id].get("visibility") != "public" for source_id in missing_pair):
+                audit.warn(
+                    "NON_PUBLIC_DUPLICATE_REVIEW_REQUIRED",
+                    f"source-ledger.jsonl:{missing_pair[0]}/{missing_pair[1]}",
+                    "This source-ID pair requires duplicate review in the private ledger; record-specific comparison details are withheld.",
+                )
+            else:
+                audit.warn(
+                    "POSSIBLE_SHORT_EXACT_DUPLICATE",
+                    f"source-ledger.jsonl:{missing_pair[0]}/{missing_pair[1]}",
+                    "Short captured_text is exactly equal for an unresolved pair; record a pair-specific duplicate_review because independence is not transitive.",
+                )
 
     members: dict[str, list[str]] = defaultdict(list)
     explicit_origins: set[str] = set()
@@ -2523,7 +2569,14 @@ def build_duplicate_groups(
             published = datetime.max.replace(tzinfo=timezone.utc)
         return explicit_priority, published, source_id
 
-    origin_by_root = {root: min(group_members, key=published_key) for root, group_members in members.items()}
+    origin_by_root = {
+        root: (
+            min(group_members)
+            if any(source_by_id[source_id].get("visibility") != "public" for source_id in group_members)
+            else min(group_members, key=published_key)
+        )
+        for root, group_members in members.items()
+    }
     return duplicate_root, origin_by_root
 
 
@@ -2540,6 +2593,22 @@ def describe_duplicate_groups(
     for root, unsorted_members in members_by_root.items():
         members = sorted(unsorted_members)
         if len(members) < 2:
+            continue
+        if any(source_by_id[source_id].get("visibility") != "public" for source_id in members):
+            # Source-ID group membership and aggregate group counts are safe to
+            # publish. The representative and mechanism are not: an earliest
+            # origin leaks chronology, while a reason can disclose equality or
+            # another record-specific private comparison result.
+            privacy_safe_representative = members[0]
+            details.append(
+                {
+                    "group_root_source_id": privacy_safe_representative,
+                    "origin_source_id": None,
+                    "representative_source_id": privacy_safe_representative,
+                    "member_source_ids": members,
+                    "collapse_reasons": ["non_public_details_withheld"],
+                }
+            )
             continue
         member_set = set(members)
         reasons: set[str] = set()
@@ -2601,7 +2670,10 @@ def describe_duplicate_groups(
         )
     return sorted(
         details,
-        key=lambda item: (str(item["origin_source_id"]), item["member_source_ids"]),
+        key=lambda item: (
+            str(item.get("representative_source_id") or item.get("origin_source_id") or ""),
+            item["member_source_ids"],
+        ),
     )
 
 
@@ -2610,6 +2682,8 @@ def detect_fuzzy_duplicates(
 ) -> None:
     eligible: list[tuple[str, int, set[int]]] = []
     reviewed: dict[tuple[str, str], str] = {}
+    source_by_id = {str(source.get("id")): source for source in sources if isinstance(source.get("id"), str)}
+    has_non_public_source = any(source.get("visibility") != "public" for source in sources)
     stored_shingles = 0
     for source in sources:
         source_id = source.get("id")
@@ -2630,22 +2704,24 @@ def detect_fuzzy_duplicates(
             ).digest()
             shingles.add(int.from_bytes(digest, "big"))
             if stored_shingles + len(shingles) > MAX_FUZZY_STORED_SHINGLES:
-                audit.warn(
-                    "FUZZY_SCAN_SKIPPED",
-                    "source-ledger.jsonl",
-                    f"Fuzzy duplicate preparation exceeds {MAX_FUZZY_STORED_SHINGLES} stored shingle digests; block or review the long records externally.",
+                message = (
+                    "Duplicate comparison exceeded a bounded resource limit; review the private ledger externally. Record-specific scan details are withheld."
+                    if has_non_public_source
+                    else f"Fuzzy duplicate preparation exceeds {MAX_FUZZY_STORED_SHINGLES} stored shingle digests; block or review the long records externally."
                 )
+                audit.warn("FUZZY_SCAN_SKIPPED", "source-ledger.jsonl", message)
                 return
         stored_shingles += len(shingles)
         eligible.append((source_id, len(tokens), shingles))
     pair_count = len(eligible) * (len(eligible) - 1) // 2
     shingle_work = max(0, len(eligible) - 1) * sum(len(shingles) for _, _, shingles in eligible)
     if pair_count > MAX_FUZZY_PAIRS or shingle_work > MAX_FUZZY_SHINGLE_WORK:
-        audit.warn(
-            "FUZZY_SCAN_SKIPPED",
-            "source-ledger.jsonl",
-            f"Fuzzy duplicate scan would require {pair_count} pairs and {shingle_work} shingle lookups, above budgets of {MAX_FUZZY_PAIRS} and {MAX_FUZZY_SHINGLE_WORK}; block or review the long records externally.",
+        message = (
+            "Duplicate comparison exceeded a bounded resource limit; review the private ledger externally. Record-specific scan details are withheld."
+            if has_non_public_source
+            else f"Fuzzy duplicate scan would require {pair_count} pairs and {shingle_work} shingle lookups, above budgets of {MAX_FUZZY_PAIRS} and {MAX_FUZZY_SHINGLE_WORK}; block or review the long records externally."
         )
+        audit.warn("FUZZY_SCAN_SKIPPED", "source-ledger.jsonl", message)
         return
     for left_index, (left_id, left_token_count, left_shingles) in enumerate(eligible):
         for right_id, right_token_count, right_shingles in eligible[left_index + 1 :]:
@@ -2667,11 +2743,18 @@ def detect_fuzzy_duplicates(
             pair = tuple(sorted((left_id, right_id)))
             if reviewed.get(pair) == "independent":
                 continue
-            audit.warn(
-                "POSSIBLE_DUPLICATE",
-                f"source-ledger.jsonl:{pair[0]}/{pair[1]}",
-                f"Five-token shingle similarity is {similarity:.0%}; record a duplicate_review decision.",
-            )
+            if any(source_by_id.get(source_id, {}).get("visibility") != "public" for source_id in pair):
+                audit.warn(
+                    "NON_PUBLIC_DUPLICATE_REVIEW_REQUIRED",
+                    f"source-ledger.jsonl:{pair[0]}/{pair[1]}",
+                    "This source-ID pair requires duplicate review in the private ledger; record-specific comparison details are withheld.",
+                )
+            else:
+                audit.warn(
+                    "POSSIBLE_DUPLICATE",
+                    f"source-ledger.jsonl:{pair[0]}/{pair[1]}",
+                    f"Five-token shingle similarity is {similarity:.0%}; record a duplicate_review decision.",
+                )
 
 
 def reconcile_links(
@@ -2771,13 +2854,27 @@ def reconcile_links(
         for review in source.get("duplicate_reviews", []):
             other_id = review.get("other_source_id") if isinstance(review, dict) else None
             if other_id not in source_by_id:
-                audit.error("BAD_SOURCE_REF", f"source-ledger.jsonl:{source_id}.duplicate_reviews", f"Unknown source ID {other_id!r}.")
+                if source.get("visibility") != "public":
+                    audit.error(
+                        "NON_PUBLIC_DUPLICATE_INTEGRITY",
+                        f"source-ledger.jsonl:{source_id}",
+                        "Duplicate linkage involving a non-public source is invalid; inspect the private ledger to correct it. Record-specific linkage details are withheld.",
+                    )
+                else:
+                    audit.error("BAD_SOURCE_REF", f"source-ledger.jsonl:{source_id}.duplicate_reviews", f"Unknown source ID {other_id!r}.")
                 continue
             pair = tuple(sorted((source_id, other_id)))
             prior = review_decisions.get(pair)
             decision = review.get("decision")
             if prior is not None and prior != decision:
-                audit.error("CONFLICTING_DUPLICATE_REVIEW", f"source-ledger.jsonl:{source_id}.duplicate_reviews", f"Pair {pair[0]!r}/{pair[1]!r} has conflicting decisions.")
+                if any(source_by_id[pair_id].get("visibility") != "public" for pair_id in pair):
+                    audit.error(
+                        "NON_PUBLIC_DUPLICATE_INTEGRITY",
+                        f"source-ledger.jsonl:{source_id}",
+                        "Duplicate linkage involving a non-public source is invalid; inspect the private ledger to correct it. Record-specific linkage details are withheld.",
+                    )
+                else:
+                    audit.error("CONFLICTING_DUPLICATE_REVIEW", f"source-ledger.jsonl:{source_id}.duplicate_reviews", f"Pair {pair[0]!r}/{pair[1]!r} has conflicting decisions.")
             review_decisions[pair] = decision
 
     for index, observation in enumerate(notes.get("observations", [])):
@@ -2864,14 +2961,27 @@ def calculate_signal_metrics(
     counter_ids = signal.get("counter_citations", [])
     support_roots = {duplicate_root[source_id] for source_id in support_ids if source_id in duplicate_root}
     counter_roots = {duplicate_root[source_id] for source_id in counter_ids if source_id in duplicate_root}
+    non_public_roots = {
+        duplicate_root[source_id]
+        for source_id, source in source_by_id.items()
+        if source_id in duplicate_root and source.get("visibility") != "public"
+    }
     if support_roots & counter_roots:
         audit.error("CONFLICTING_DUPLICATE_STANCE", f"signal-catalog.json:{signal_id}", "The same duplicate group cannot support and counter the same signal.")
     for field, source_ids in (("support_citations", support_ids), ("counter_citations", counter_ids)):
         for source_id in source_ids:
             if source_id in duplicate_root:
-                origin_id = origin_by_root.get(duplicate_root[source_id])
-                if origin_id and source_id != origin_id:
-                    audit.error("NON_ORIGIN_CITATION", f"signal-catalog.json:{signal_id}.{field}", f"Cite duplicate-group origin {origin_id!r} instead of {source_id!r}.")
+                root = duplicate_root[source_id]
+                representative_id = origin_by_root.get(root)
+                if representative_id and source_id != representative_id:
+                    if root in non_public_roots:
+                        audit.error(
+                            "NON_REPRESENTATIVE_CITATION",
+                            f"signal-catalog.json:{signal_id}.{field}",
+                            f"Cite duplicate-group representative {representative_id!r} instead of {source_id!r}; private origin details are withheld.",
+                        )
+                    else:
+                        audit.error("NON_ORIGIN_CITATION", f"signal-catalog.json:{signal_id}.{field}", f"Cite duplicate-group origin {representative_id!r} instead of {source_id!r}.")
 
     all_support = representative_records(support_ids, source_by_id, duplicate_root, origin_by_root)
     known_support = [
@@ -3168,19 +3278,50 @@ def semantic_fingerprint(
         # Unknown fields are structurally invalid and have no semantic meaning;
         # excluding them also prevents misspelled private prose fields from
         # becoming a low-entropy public fingerprint oracle.
-        prepared = {key: source[key] for key in SOURCE_REQUIRED if key in source}
-        if source.get("visibility") != "public":
-            # Do not publish an offline dictionary oracle for short private
-            # responses. This conservative branch also protects structurally
-            # invalid rows whose intended private visibility is misspelled or
-            # missing. Valid public evidence remains fully bound.
-            for key in ("title", "captured_text", "excerpt", "notes"):
-                prepared[key] = "<private-text-withheld-from-public-fingerprint>"
+        if source.get("visibility") == "public":
+            prepared = {key: source[key] for key in SOURCE_REQUIRED if key in source}
+        else:
+            # The fingerprint is itself public. Bind non-public rows only to
+            # the same narrow provenance allowlist that may be rendered. In
+            # particular, do not turn dates, flags, classifications, status,
+            # linkage metadata, or private text into low-entropy hash oracles.
+            raw_id = source.get("id")
+            source_id = (
+                raw_id
+                if isinstance(raw_id, str)
+                and ID_RE.fullmatch(raw_id)
+                and re.fullmatch(r"src[-_][a-z0-9][a-z0-9_-]*", raw_id)
+                else None
+            )
+            raw_record_ref = source.get("record_ref")
+            record_ref = (
+                raw_record_ref
+                if isinstance(raw_record_ref, str)
+                and OPAQUE_RECORD_REF_RE.fullmatch(raw_record_ref)
+                and not EMAIL_RE.search(raw_record_ref)
+                and not PHONE_RE.search(raw_record_ref)
+                else None
+            )
+            raw_file_hash = source.get("source_file_sha256")
+            source_file_sha256 = (
+                raw_file_hash
+                if isinstance(raw_file_hash, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", raw_file_hash)
+                else None
+            )
+            prepared = {
+                "id": source_id,
+                "record_ref": record_ref,
+                "source_file_sha256": source_file_sha256,
+                "excerpt": None,
+            }
         fingerprint_sources.append(prepared)
     value = {
         "study-plan.json": plan,
         "query-log.jsonl": sorted(queries, key=lambda record: str(record.get("id", ""))),
-        "source-ledger.jsonl": sorted(fingerprint_sources, key=lambda record: str(record.get("id", ""))),
+        "source-ledger.jsonl": sorted(
+            fingerprint_sources,
+            key=lambda record: (str(record.get("id") or ""), canonical_json(record)),
+        ),
         "signal-catalog.json": {"schema_version": SCHEMA_VERSION, "signals": sorted(signals, key=lambda record: str(record.get("id", "")))},
         "research-notes.json": notes,
     }
@@ -3424,6 +3565,18 @@ def render_csv(report: dict[str, Any]) -> str:
 
 
 def render_source(source: dict[str, Any]) -> str:
+    if source.get("visibility") != "public":
+        source_id = html.escape(normalize_text(str(source.get("id", "source"))), quote=True).replace("`", "&#96;")
+        record_ref = html.escape(normalize_text(str(source.get("record_ref", ""))), quote=True).replace("`", "&#96;")
+        provenance = html.escape(
+            normalize_text(str(source.get("source_file_sha256", ""))), quote=True
+        ).replace("`", "&#96;")
+        return (
+            "> Supplied-private source content and record-specific metadata withheld. "
+            f"Provenance: `{source_id}`; record `{record_ref}`; caller-declared "
+            f"source-file SHA-256 `{provenance}`. The file/digest relationship is not authenticated."
+        )
+
     source_id = markdown_escape(source.get("id", "source"))
     excerpt = markdown_escape(source.get("excerpt", ""))
     published = markdown_escape(str(source.get("published_at", ""))[:10])
@@ -3436,12 +3589,10 @@ def render_source(source: dict[str, Any]) -> str:
     if source.get("source_status") != "available":
         flags.append(f"source status: {source.get('source_status')}")
     suffix = f"; {markdown_escape(', '.join(flags))}" if flags else ""
-    if source.get("visibility") == "public" and isinstance(source.get("url"), str):
+    if isinstance(source.get("url"), str):
         locator = f"[{source_id}]({markdown_url(source['url'])})"
         return f"> \"{excerpt}\" - {locator}, {published}; {evidence}{suffix}"
-    locator = f"{source_id} (private supplied record `{markdown_escape(source.get('record_ref', ''))}`)"
-    provenance = markdown_escape(source.get("source_file_sha256", ""))
-    return f"> Private excerpt withheld - {locator}, {published}; provenance `{provenance}`; {evidence}{suffix}"
+    return f"> \"{excerpt}\" - {source_id}, {published}; {evidence}{suffix}"
 
 
 def render_findings(report: dict[str, Any], context: dict[str, Any]) -> str:
@@ -3569,17 +3720,24 @@ def render_findings(report: dict[str, Any], context: dict[str, Any]) -> str:
     lines.extend(["", "## Duplicate and repost groups", ""])
     duplicate_groups = report.get("duplicate_groups", [])
     if duplicate_groups:
+        has_non_public_group = any(
+            "non_public_details_withheld" in group.get("collapse_reasons", [])
+            for group in duplicate_groups
+        )
         lines.extend(
             [
-                "| Origin | Collapsed members | Reasons |",
+                "| Representative | Collapsed members | Reasons |"
+                if has_non_public_group
+                else "| Origin | Collapsed members | Reasons |",
                 "| --- | --- | --- |",
             ]
         )
         for group in duplicate_groups:
             members = ", ".join(f"`{markdown_escape(source_id)}`" for source_id in group.get("member_source_ids", []))
             reasons = ", ".join(f"`{markdown_escape(reason)}`" for reason in group.get("collapse_reasons", []))
+            representative_id = group.get("representative_source_id") or group.get("origin_source_id", "")
             lines.append(
-                f"| `{markdown_escape(group.get('origin_source_id', ''))}` | {members} | {reasons} |"
+                f"| `{markdown_escape(representative_id)}` | {members} | {reasons} |"
             )
     else:
         lines.append("No multi-source duplicate or repost groups were collapsed.")

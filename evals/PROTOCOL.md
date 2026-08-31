@@ -25,7 +25,7 @@ python evals/harness.py verify
 python evals/harness.py prepare --out <new-run-dir> --replicates 5 --seed <allocation-seed>
 ```
 
-`verify` validates the eight cases and their oracles and emits SHA-256 digests for the fixtures, schemas, rubric, and five treatment resources. `prepare` refuses a path inside the repository, a link/junction/reparse point, or a non-empty output directory. It creates matched baseline/skill trials, randomizes dispatch order, assigns the same `model_seed` to both members of a pair, and writes allocator-only treatment metadata to `<run>/allocation.private.json`.
+`verify` validates the twelve cases and their oracles and emits SHA-256 digests for the fixtures, schemas, rubric, and five treatment resources. `prepare` refuses a path inside the repository, a link/junction/reparse point, or a non-empty output directory. With five replicates it creates 120 matched trials (12 cases × 2 conditions × 5 replicates), randomizes dispatch order, assigns the same `model_seed` to both members of a pair, and writes allocator-only treatment metadata to `<run>/allocation.private.json`.
 
 The allocation freezes:
 
@@ -90,7 +90,7 @@ For every trial, the operator creates a new temporary directory, copies only the
 
 The Codex invocation ignores user configuration and repository rules, skips host-skill discovery, inherits no shell environment through the model configuration, and disables model-callable shell, browser/search, connectors/apps/plugins, memories, computer use, multi-agent, and the other features enumerated in `run_trials.py`. The Codex service still requires its normal host connectivity; the claim is that the evaluated model receives no enabled retrieval or execution tool.
 
-Both conditions use the same executable, model, reasoning effort, low verbosity, sandbox, timeout, and disabled-feature set. The current operator records allocated pair seeds but does not apply them because its recorded CLI exposes no request-seed option. Independent replicates therefore remain necessary.
+Both conditions use the same executable, model, reasoning effort, low verbosity, sandbox, timeout, and disabled-feature set. The operator hashes the executable before its capability probes and requires that hash to remain stable after version/help/model-catalog probes, immediately before and after each process launch, after each process completes, and after the batch. A mismatch invalidates the first attempt rather than silently rebinding configuration. It hashes captured `codex exec --help`, records any detected `--seed` or `--request-seed` flags, and refuses preflight/batch execution if either appears until the operator can apply allocated pair seeds. For a permitted run, config and every execution record use one canonical declaration that pair seeds were recorded but not applied, and seed flags are forbidden in recorded argv. Independent replicates therefore remain necessary.
 
 The only response artifact accepted by the harness is the assistant's exact final-output bytes in `response.raw.txt`. The output must be UTF-8 containing exactly one JSON object that satisfies `response.schema.json`, without a Markdown fence or surrounding prose. The provider-facing schema is deliberately restricted to required object shapes, explicit scalar/nullable types, and enums supported by strict Structured Outputs. Independent deterministic validation enforces the full regex, length, cardinality, uniqueness, cross-field, citation, and packet-identity rules before scoring. Do not create or substitute `response.json`; the harness ignores it. Do not extract, trim into a different file, repair, follow up, retry, or select a better answer. Missing, non-UTF-8, fenced, schema-invalid, refused, timed-out, or malformed output is the observed result.
 
@@ -139,7 +139,7 @@ Use exactly two initial scorers who:
 - use distinct scorer IDs and distinct files;
 - use only the critical-failure codes enumerated by the scorer schema.
 
-Keep both initial files separate and final. A file containing multiple scorer IDs is not evidence of scorer independence, even if it contains two records per response. Duplicate records, unknown blind IDs, malformed JSON, schema violations, missing records, mismatched case IDs, reused file paths, and reused scorer IDs are validation failures. The harness hashes the exact bytes of each file it parses and binds its role, stable scorer ID, and covered blind IDs.
+Keep both initial files separate and final. A file containing multiple scorer IDs is not evidence of scorer independence, even if it contains two records per response. After a scorer file parses as UTF-8 JSONL, duplicate records, unknown blind IDs, schema violations, missing records, mismatched case IDs, reused file paths, and reused scorer IDs are validation failures. Missing/unreadable files, malformed JSON, and invalid UTF-8 abort before report creation. The harness hashes the exact bytes of each file it parses and binds its role, stable scorer ID, and covered blind IDs.
 
 After both initial files are locked, derive the treatment-blind adjudication plan:
 
@@ -151,13 +151,13 @@ python evals/harness.py adjudication-plan \
   --out <new-adjudication-plan.json>
 ```
 
-The deterministic plan targets a response when the two initial scorers differ by at least 2 points on any applicable dimension or disagree on whether any critical failure occurred. It records the disputed dimensions and critical-occurrence flag, plus the hashes, stable scorer IDs, and complete coverage of both initial files. It contains no treatment mapping.
+The deterministic plan uses `schema_version: "2.0"` and `adjudication_contract_version: "2.0"`. It targets a response when the two initial scorers differ by at least 2 points on any applicable dimension or disagree on whether any critical failure occurred. It records the disputed dimensions and critical-occurrence flag, plus the hashes, stable scorer IDs, and complete coverage of both initial files. Each treatment-blind target also records its `case_id`, public `packet_path`, and an explicit complete record template. The top-level adjudicator contract defines every placeholder and the role-specific null rules. The plan contains no treatment mapping or initial numeric ratings.
 
 The plan path is exclusive and must resolve outside the repository, immutable public bundle, and any frozen evaluation run ancestor recognized by its allocation/operator markers. Blind IDs must match the fixed opaque-ID grammar before they can form packet paths. Before any packet is used, adjudication requires the exact four root files, the sole `packets/` directory, and exactly one packet per validated blind ID; an injected root or packet file is rejected instead of being copied into the plan manifest. Linked/reparse bundle trees or output nodes, malformed IDs, protected-tree output paths, and existing outputs are rejected without mutation.
 
-Obtain exactly one third, blind response-level record for every target and no record for an untargeted response. Adjudicator files may divide the targets, but each file must use one new stable scorer ID, and every initial or adjudicator file and scorer ID must be distinct. A missing, duplicate, or unplanned adjudicator record is a protocol validation failure.
+Obtain exactly one third, blind response-level record for every target and no record for an untargeted response. Adjudicator files may divide the targets, but each file must use one new stable scorer ID, and every initial or adjudicator file and scorer ID must be distinct. Replace every `REPLACE_...` placeholder in the target template; `scorer_id` and `rationale` equal to `REPLACE` or beginning with `REPLACE_` are invalid. Set an integer from 0 to 4 exactly for dimensions listed in `disputed_dimensions`; every other rating must be `null`, even when that dimension is packet-applicable. When `critical_occurrence_disputed` is false, `critical_failures` must be empty. When it is true, an empty array is the no-occurrence vote and one or more scorer-schema codes is the occurrence vote. A missing, malformed, duplicate, or unplanned adjudicator record is a protocol validation failure.
 
-For a disputed dimension, the final rating is the median of the two initial ratings and the targeted adjudicator rating. For an undisputed dimension, it remains the mean of the two initial ratings even when that response was targeted for another reason; the adjudicator does not rescore settled dimensions.
+For a disputed dimension, the final rating is the median of the two initial ratings and the targeted adjudicator rating. For an undisputed dimension, it remains the mean of the two initial ratings even when that response was targeted for another reason; the adjudicator leaves it `null` and does not rescore it. This sparse version-2 contract is machine-incompatible with the dense version-1 behavior, in which adjudicators filled every packet-applicable rating. The static scorer schema permits the structural integer-or-null union, while plan/contract versions and the dependency-free validator enforce the packet- and role-dependent assignments.
 
 Critical adjudication operates on **occurrence**, not matching codes:
 
@@ -167,6 +167,19 @@ Critical adjudication operates on **occurrence**, not matching codes:
 - When occurrence reaches a majority, the report retains the union of all codes reported for that response. Per-code vote counts, distinct code sets, and code disagreement remain visible; no individual code needs its own majority.
 
 Thus two initial graders who report different critical codes still establish a critical failure by 2–0 occurrence; code disagreement alone does not trigger adjudication.
+
+Before the private map is opened or a report path is allocated, validate the locked plan and all targeted files:
+
+```text
+python evals/harness.py adjudication-check \
+  --public-bundle <scoring-bundle> \
+  --plan <adjudication-plan.json> \
+  --initial-scores <initial-a.jsonl> \
+  --initial-scores <initial-b.jsonl> \
+  --adjudicator-scores <targeted-adjudicator.jsonl>
+```
+
+Repeat `--adjudicator-scores` only for additional files that cover disjoint targets. The check uses no private map: it revalidates the immutable public bundle, regenerates the canonical version-2 plan from exactly two initial files, compares both the decoded structure and exact plan bytes, applies the sparse adjudicator contract, and requires exact planned coverage. It rechecks plan, scorer, and public-bundle bytes before returning, writes no artifact, and exits nonzero on any mismatch. When the plan has no targets, omit this command and all adjudicator score arguments.
 
 The report computes exact rating agreement and agreement within one point only for the two complete initial files on applicable dimensions. Adjudication does not improve or dilute the reliability statistic. Protocol validity requires at least 80% initial-pair within-one agreement; exact agreement is reported but has no separate threshold.
 
@@ -181,11 +194,12 @@ python evals/harness.py score \
   --initial-scores <initial-a.jsonl> \
   --initial-scores <initial-b.jsonl> \
   --adjudicator-scores <targeted-adjudicator.jsonl> \
+  --adjudication-plan <adjudication-plan.json> \
   --seed <bootstrap-seed> \
   --out <new-report.json>
 ```
 
-Omit `--adjudicator-scores` when the plan has no targets; otherwise repeat it only for additional files that cover disjoint planned targets. `--out` is exclusive and must resolve outside the repository, frozen run, and public bundle: the command refuses an overlap, link/reparse output node, or existing report.
+When targets exist, `--adjudication-plan` is mandatory and must name the exact canonical version-2 bytes that passed `adjudication-check`; repeat `--adjudicator-scores` only for additional files that cover disjoint planned targets. When no targets exist, both options must be omitted. Final scoring regenerates the expected plan from the exact public bundle and two initial files, compares structure and bytes, records the locked plan's SHA-256/byte count/target count/versions, and rechecks its bytes before return. `--out` is exclusive and must resolve outside the repository, frozen run, and public bundle: the command refuses an overlap, link/reparse output node, or existing report. A missing, old-version, reformatted, mismatched, or unexpected plan, and well-formed scorer records that fail contract/coverage checks, are retained in a saved protocol-invalid report with validation errors; scoring does not silently repair evidence. Scorer inputs that are missing, unreadable, malformed JSON, or invalid UTF-8 abort before report creation. The treatment-blind check is therefore the fail-fast gate before choosing the final report path.
 
 Before aggregation, the harness checks the frozen chain: current suite hashes; the exact run-root, dispatch-root, trial-file, and trial-directory sets; allocation bytes and identities; mandatory operator config and summary; every per-trial execution/log/response hash; the private 32-byte HMAC key, its public/private commitment, every recomputed blind ID and keyed order; exact public-bundle file/directory sets, normalized modification times, and hashes; blind-packet hashes; and embedded raw-response bytes/hashes/counts. It also enforces the initial/adjudicator file roles, stable distinct scorer identities, full initial coverage, and exact planned adjudicator coverage. Before returning, it rechecks the private map, allocation, complete operator chain, public-bundle tree/metadata, and scorer-file hashes for changes during aggregation. A mismatch aborts scoring rather than producing a partially trusted report.
 
@@ -206,7 +220,7 @@ The deterministic checks cover support label, independent authors/threads/source
 
 The matched effect is skill minus baseline within each case/replicate pair. The 95% interval uses exactly **10,000** deterministic hierarchical-bootstrap draws: cases are resampled first, then replicates within each selected case. `score --seed` is the bootstrap seed, and both seed and iteration count appear in `report.json`.
 
-The report manifest also records allocation and blind seeds, the blind-key SHA-256 commitment without the key, fixed scoring thresholds, sanitized operator configuration and outcomes, fixture/treatment/allocation/private-map hashes, the complete operator-chain and public-bundle manifests, raw-response and packet hashes, the deterministic adjudication targets, and each parsed scorer file's role, stable scorer ID, covered blind IDs, hash, and byte count.
+The report declares `adjudication_contract_version: "2.0"`. Its manifest records allocation and blind seeds, the blind-key SHA-256 commitment without the key, fixed scoring thresholds, sanitized operator configuration and outcomes, fixture/treatment/allocation/private-map hashes, the required/provided plan state and locked plan SHA-256/byte count/target count/versions, the complete operator-chain and public-bundle manifests, raw-response and packet hashes, the deterministic adjudication targets, and each parsed scorer file's role, stable scorer ID, covered blind IDs, hash, and byte count.
 
 ## 7. Apply the preregistered gates
 
@@ -218,6 +232,7 @@ All must pass:
 
 - at least 5 replicates for every case/condition cell;
 - exactly two separate, complete initial scorer files with distinct stable scorer IDs;
+- exactly one byte- and structure-matching version-2 locked plan when targets exist, and no plan when none exist;
 - exactly one planned third record for every targeted response and no unplanned adjudicator record;
 - no unresolved 2-point initial rating disagreement or initial critical-occurrence disagreement;
 - at least 80% of initial scorer rating pairs agree within one point;

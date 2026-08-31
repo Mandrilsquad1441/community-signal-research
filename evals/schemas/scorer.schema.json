@@ -2,15 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://community-signal-research.example/evals/scorer.schema.json",
   "title": "Blind qualitative scorer record",
+  "description": "Shared record shape for initial scores and sparse adjudication-contract 2.0 scores. Initial records use integers for every packet-applicable dimension and null otherwise. Version-2 targeted adjudicator records use integers only for dimensions named in the locked plan's disputed_dimensions and null everywhere else. Dense version-1 adjudicator records are incompatible. The dependency-free harness enforces these packet- and plan-dependent rules, including whether a critical-occurrence vote is assigned and rejection of unreplaced REPLACE sentinels.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "scorer_id", "blind_id", "case_id", "ratings", "critical_failures", "rationale"],
   "properties": {
     "schema_version": {"const": "1.0"},
-    "scorer_id": {"type": "string", "minLength": 1, "maxLength": 80},
+    "scorer_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^(?!.*[\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029])\\S(?:.*\\S)?$", "not": {"pattern": "^REPLACE(?:_|$)"}},
     "blind_id": {"type": "string", "pattern": "^blind-[0-9a-f]{32}$"},
     "case_id": {"type": "string", "pattern": "^case-[0-9]{2}-[a-z0-9-]+$"},
     "ratings": {
+      "description": "Integer-or-null is only the structural union. Role-specific required integers and nulls are enforced against the packet and locked adjudication plan by the harness.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -37,6 +39,7 @@
       }
     },
     "critical_failures": {
+      "description": "Initial scorers always assess critical failures. A targeted adjudicator supplies this vote only when critical_occurrence_disputed is true; otherwise this array must be empty.",
       "type": "array",
       "items": {
         "enum": [
@@ -54,6 +57,6 @@
       },
       "uniqueItems": true
     },
-    "rationale": {"type": "string", "minLength": 1, "maxLength": 2000}
+    "rationale": {"type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S", "not": {"pattern": "^\\s*REPLACE(?:_|$)"}}
   }
 }

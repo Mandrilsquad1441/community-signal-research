@@ -256,6 +256,80 @@ class RenderingSafetyTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
+    def make_private_rendering_case(
+        self, placement: str
+    ) -> tuple[dict[str, object], dict[str, object], str, str, str, tuple[str, ...]]:
+        source_id = "src-900" if placement == "counter" else "src-001"
+        item = source(self.bundle, source_id)
+        private_text = f"PRIVATE {placement.upper()} CAPTURED TEXT MUST NEVER RENDER"
+        private_excerpt = f"PRIVATE-{placement.upper()}-EXCERPT-MUST-NOT-RENDER"
+        private_title = f"PRIVATE-{placement.upper()}-TITLE-MUST-NOT-RENDER"
+        private_note = f"PRIVATE-{placement.upper()}-NOTE-MUST-NOT-RENDER"
+        record_ref = f"vault/{placement}#row-17"
+        file_hash = "sha256:" + {"support": "b", "counter": "c", "wtp": "d"}[placement] * 64
+        published_at = {
+            "support": "2026-03-21T07:08:09Z",
+            "counter": "2026-04-22T08:09:10Z",
+            "wtp": "2026-05-23T09:10:11Z",
+        }[placement]
+        evidence_types = {
+            "support": ["desired_outcome"],
+            "counter": ["constraint"],
+            "wtp": ["purchase_intent", "desired_outcome"],
+        }[placement]
+        item.update(
+            {
+                "platform": "export",
+                "community": "authorized-export",
+                "source_type": "export_record",
+                "url": None,
+                "record_ref": record_ref,
+                "visibility": "supplied_private",
+                "capture_method": "export",
+                "source_file_sha256": file_hash,
+                "thread_url": None,
+                "unit_id": f"export:{placement}-unit",
+                "thread_id": f"export:{placement}-thread",
+                "published_at": published_at,
+                "author_key": "unknown" if placement == "counter" else "author:" + "e" * 16,
+                "source_status": "deleted" if placement == "counter" else "edited",
+                "title": private_title,
+                "captured_text": private_text + " " + private_excerpt,
+                "excerpt": private_excerpt,
+                "evidence_types": evidence_types,
+                "promotional": "yes" if placement == "counter" else "no",
+                "notes": private_note,
+            }
+        )
+        self.bundle["plan"]["scope"]["platforms"].append("export")
+        self.bundle["plan"]["scope"]["communities"].append("authorized-export")
+        query_id = move_source_to_platform_query(self.bundle, source_id, "export")
+        if placement == "counter":
+            next(query for query in self.bundle["queries"] if query["id"] == query_id)["intent"] = "counter"
+        if source_id == "src-001":
+            public_observation = source(self.bundle, "src-002")
+            self.bundle["notes"]["observations"][0] = {
+                "text": public_observation["excerpt"],
+                "source_ids": ["src-002"],
+            }
+        if placement == "wtp":
+            signal(self.bundle)["wtp_statement"] = "One source meets the explicit purchase-intent criterion."
+            signal(self.bundle)["wtp_citations"] = [source_id]
+        report, context = analyze_bundle(self.study, self.bundle)
+        forbidden = (
+            private_text,
+            private_excerpt,
+            private_title,
+            private_note,
+            published_at[:10],
+            "desired_outcome" if placement != "counter" else "constraint",
+            "promotion: yes",
+            "author: unknown",
+            "source status: deleted",
+            "source status: edited",
+        )
+        return report, context, source_id, record_ref, file_hash, forbidden
+
     def test_markdown_control_syntax_from_research_text_is_escaped(self) -> None:
         payload = "[click](https://evil.example) <script>alert(1)</script>"
         signal(self.bundle)["name"] = payload
@@ -332,9 +406,81 @@ class RenderingSafetyTests(unittest.TestCase):
         self.assertEqual("pass", report["status"])
         rendered = csr.render_findings(report, context)
         self.assertNotIn(private_text, rendered)
-        self.assertIn("Private excerpt withheld", rendered)
-        self.assertIn("customer\\.csv:row\\-17", rendered)
+        self.assertIn("Supplied-private source content and record-specific metadata withheld", rendered)
+        self.assertIn("customer.csv:row-17", rendered)
         self.assertIn("sha256:" + "a" * 64, rendered)
+
+    def test_private_provenance_only_rendering_across_evidence_sections(self) -> None:
+        section_bounds = {
+            "support": ("### Supporting evidence", "### Counterevidence"),
+            "counter": ("### Counterevidence", "### Willingness to pay"),
+            "wtp": ("### Willingness to pay", "### What could falsify or reframe this"),
+        }
+        expected_occurrences = {"support": 1, "counter": 1, "wtp": 2}
+        for placement in ("support", "counter", "wtp"):
+            with self.subTest(placement=placement):
+                self.bundle = make_bundle()
+                report, context, source_id, record_ref, file_hash, forbidden = self.make_private_rendering_case(
+                    placement
+                )
+                self.assertEqual("pass", report["status"], report)
+                rendered = csr.render_findings(report, context)
+                provenance_lines = [
+                    line
+                    for line in rendered.splitlines()
+                    if "Supplied-private source content and record-specific metadata withheld" in line
+                    and f"`{source_id}`" in line
+                ]
+                self.assertEqual(expected_occurrences[placement], len(provenance_lines))
+                for line in provenance_lines:
+                    self.assertIn(f"record `{record_ref}`", line)
+                    self.assertIn(f"source-file SHA-256 `{file_hash}`", line)
+                    self.assertIn("file/digest relationship is not authenticated", line)
+                    for forbidden_value in forbidden:
+                        self.assertNotIn(forbidden_value, line)
+                for forbidden_value in forbidden:
+                    self.assertNotIn(forbidden_value, rendered)
+
+                section_start, section_end = section_bounds[placement]
+                section = rendered.split(section_start, 1)[1].split(section_end, 1)[0]
+                self.assertIn(f"`{source_id}`", section)
+                self.assertIn(f"record `{record_ref}`", section)
+
+    def test_public_source_rendering_remains_unchanged(self) -> None:
+        item = source(self.bundle, "src-001")
+        self.assertEqual(
+            '> "Independent participant 1 describes research failure 1" - '
+            '[src\\-001](https://www.reddit.com/r/alpha/comments/thread1/topic/c001/), '
+            '2026\\-02\\-15; `problem`, `workaround`',
+            csr.render_source(item),
+        )
+
+    def test_unknown_visibility_rendering_fails_closed_to_private_provenance(self) -> None:
+        item = source(self.bundle, "src-001")
+        item.update(
+            {
+                "visibility": "supplied-private",
+                "url": "https://private.invalid/secret-locator",
+                "record_ref": "survey.csv:row-9",
+                "source_file_sha256": "sha256:" + "b" * 64,
+                "excerpt": "PRIVATE-CANARY-EXCERPT",
+                "published_at": "2026-07-19T00:00:00Z",
+                "evidence_types": ["observed_payment"],
+                "promotional": "yes",
+            }
+        )
+        rendered = csr.render_source(item)
+        self.assertIn("Supplied-private source content and record-specific metadata withheld", rendered)
+        self.assertIn("survey.csv:row-9", rendered)
+        self.assertIn("sha256:" + "b" * 64, rendered)
+        for forbidden in (
+            "PRIVATE-CANARY-EXCERPT",
+            "private.invalid",
+            "2026-07-19",
+            "observed_payment",
+            "promotion: yes",
+        ):
+            self.assertNotIn(forbidden, rendered)
 
     def test_promotional_citation_remains_visible_but_is_not_counted(self) -> None:
         source(self.bundle, "src-001")["promotional"] = "yes"
@@ -1132,7 +1278,10 @@ class IntegrityHardeningTests(unittest.TestCase):
 
     def test_long_repost_chain_does_not_recurse(self) -> None:
         records = {
-            f"src-{index}": {"repost_of": f"src-{index + 1}" if index < 1_999 else None}
+            f"src-{index}": {
+                "repost_of": f"src-{index + 1}" if index < 1_999 else None,
+                "visibility": "public",
+            }
             for index in range(2_000)
         }
         audit = csr.Audit()
@@ -1159,7 +1308,7 @@ class IntegrityHardeningTests(unittest.TestCase):
         audit = csr.Audit()
         csr.detect_repost_cycles(by_id, audit)
         roots, origins = csr.build_duplicate_groups(rows, by_id, audit)
-        self.assertIn("REPOST_CHAIN", {issue.code for issue in audit.errors})
+        self.assertIn("NON_PUBLIC_DUPLICATE_INTEGRITY", {issue.code for issue in audit.errors})
         self.assertEqual(count, len(roots))
         self.assertEqual(1, len(set(roots.values())))
         self.assertEqual(1, len(origins))
@@ -1205,7 +1354,7 @@ class IntegrityHardeningTests(unittest.TestCase):
         title_rows = [
             {
                 **base,
-                "id": f"src-title-{index}",
+                "id": f"src-private-{index}",
                 "unit_id": "export:same",
                 "captured_text": "same private response",
                 "title": title,
@@ -1219,7 +1368,9 @@ class IntegrityHardeningTests(unittest.TestCase):
             audit,
         )
         conflict = next(issue for issue in audit.errors if issue.code == "PRIVATE_PROVENANCE_CONFLICT")
-        self.assertIn("title", conflict.message)
+        self.assertNotIn("title", conflict.message)
+        self.assertNotIn("captured_text", conflict.message)
+        self.assertIn("Record-specific conflict details are withheld", conflict.message)
 
         equivalent_rows = [
             {
@@ -1306,7 +1457,7 @@ class IntegrityHardeningTests(unittest.TestCase):
         roots, origins = csr.build_duplicate_groups(rows, by_id, audit)
         groups = csr.describe_duplicate_groups(rows, roots, origins)
         self.assertEqual(roots["src-0"], roots["src-1"])
-        self.assertEqual(["exact_captured_text"], groups[0]["collapse_reasons"])
+        self.assertEqual(["non_public_details_withheld"], groups[0]["collapse_reasons"])
 
     def test_public_identity_conflicting_material_is_rejected(self) -> None:
         left = json.loads(json.dumps(source(self.bundle, "src-001")))
@@ -1456,7 +1607,7 @@ class IntegrityHardeningTests(unittest.TestCase):
         self.assertEqual(substantive["src-0"], substantive["src-1"])
         short, short_audit = roots_for("same tiny phrase repeated")
         self.assertNotEqual(short["src-0"], short["src-1"])
-        self.assertIn("POSSIBLE_SHORT_EXACT_DUPLICATE", {issue.code for issue in short_audit.warnings})
+        self.assertIn("NON_PUBLIC_DUPLICATE_REVIEW_REQUIRED", {issue.code for issue in short_audit.warnings})
 
     def test_independent_review_suppresses_short_exact_duplicate_warning(self) -> None:
         text = "same tiny phrase repeated"
@@ -1492,6 +1643,7 @@ class IntegrityHardeningTests(unittest.TestCase):
         roots, _ = csr.build_duplicate_groups(rows, {row["id"]: row for row in rows}, audit)
         self.assertNotEqual(roots["src-one"], roots["src-two"])
         self.assertNotIn("POSSIBLE_SHORT_EXACT_DUPLICATE", {issue.code for issue in audit.warnings})
+        self.assertNotIn("NON_PUBLIC_DUPLICATE_REVIEW_REQUIRED", {issue.code for issue in audit.warnings})
 
     def test_short_exact_duplicate_warnings_and_artifacts_are_permutation_invariant(self) -> None:
         text = "same tiny phrase repeated"
@@ -1562,7 +1714,7 @@ class IntegrityHardeningTests(unittest.TestCase):
         audit = csr.Audit()
         roots, _ = csr.build_duplicate_groups(rows, {row["id"]: row for row in rows}, audit)
         self.assertEqual(3, len(set(roots.values())))
-        warnings = [issue for issue in audit.warnings if issue.code == "POSSIBLE_SHORT_EXACT_DUPLICATE"]
+        warnings = [issue for issue in audit.warnings if issue.code == "NON_PUBLIC_DUPLICATE_REVIEW_REQUIRED"]
         self.assertEqual(1, len(warnings))
         self.assertEqual("source-ledger.jsonl:src-b/src-c", warnings[0].path)
 
@@ -1611,6 +1763,184 @@ class IntegrityHardeningTests(unittest.TestCase):
         self.assertEqual(roots["src-a"], roots["src-b"])
         self.assertEqual(roots["src-a"], roots["src-z-bridge"])
         self.assertNotIn("POSSIBLE_SHORT_EXACT_DUPLICATE", {issue.code for issue in audit.warnings})
+        self.assertNotIn("NON_PUBLIC_DUPLICATE_REVIEW_REQUIRED", {issue.code for issue in audit.warnings})
+
+    def test_non_public_duplicate_group_withholds_reason_and_chronology(self) -> None:
+        shared_text = " ".join(f"shared-private-token-{index}" for index in range(16))
+        rows = [
+            {
+                "id": "src-a-public",
+                "visibility": "public",
+                "platform": "forum",
+                "unit_id": "forum:public",
+                "repost_of": None,
+                "duplicate_reviews": [],
+                "captured_text": shared_text,
+                "published_at": "2026-08-30T00:00:00Z",
+            },
+            {
+                "id": "src-z-private",
+                "visibility": "supplied_private",
+                "platform": "export",
+                "unit_id": "export:private",
+                "repost_of": None,
+                "duplicate_reviews": [],
+                "captured_text": shared_text,
+                "published_at": "2020-01-01T00:00:00Z",
+            },
+        ]
+
+        def details_for(candidate_rows: list[dict[str, object]]) -> tuple[dict[str, str], list[dict[str, object]]]:
+            audit = csr.Audit()
+            by_id = {str(row["id"]): row for row in candidate_rows}
+            roots, origins = csr.build_duplicate_groups(candidate_rows, by_id, audit)
+            self.assertEqual([], audit.errors)
+            return origins, csr.describe_duplicate_groups(candidate_rows, roots, origins)
+
+        origins, details = details_for(rows)
+        root = next(iter(origins))
+        self.assertEqual("src-a-public", origins[root])
+        self.assertEqual(
+            {
+                "group_root_source_id": "src-a-public",
+                "origin_source_id": None,
+                "representative_source_id": "src-a-public",
+                "member_source_ids": ["src-a-public", "src-z-private"],
+                "collapse_reasons": ["non_public_details_withheld"],
+            },
+            details[0],
+        )
+
+        changed_date_rows = json.loads(json.dumps(rows))
+        changed_date_rows[1]["published_at"] = "2030-12-31T23:59:59Z"
+        changed_origins, changed_details = details_for(changed_date_rows)
+        self.assertEqual("src-a-public", changed_origins[next(iter(changed_origins))])
+        self.assertEqual(details, changed_details)
+
+        report = {
+            "status": "pass",
+            "input_fingerprint": "sha256:" + "0" * 64,
+            "coverage_execution_score": 0,
+            "signals": [],
+            "duplicate_groups": details,
+            "coverage": {},
+            "issues": [],
+        }
+        rendered = csr.render_findings(report, {"plan": {}, "queries": [], "notes": {}})
+        self.assertIn("| Representative | Collapsed members | Reasons |", rendered)
+        self.assertIn(r"non\_public\_details\_withheld", rendered)
+        for forbidden in ("exact_captured_text", "explicit_repost", "reviewed_same_source", "2020-01-01"):
+            self.assertNotIn(forbidden, rendered)
+
+    def test_non_public_duplicate_warnings_withhold_comparison_mechanism(self) -> None:
+        short_text = "same tiny phrase repeated"
+        short_rows = [
+            {
+                "id": "src-public",
+                "visibility": "public",
+                "platform": "forum",
+                "unit_id": "forum:public",
+                "repost_of": None,
+                "duplicate_reviews": [],
+                "captured_text": short_text,
+                "published_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "id": "src-private",
+                "visibility": "supplied_private",
+                "platform": "export",
+                "unit_id": "export:private",
+                "repost_of": None,
+                "duplicate_reviews": [],
+                "captured_text": short_text,
+                "published_at": "2026-01-02T00:00:00Z",
+            },
+        ]
+        short_audit = csr.Audit()
+        csr.build_duplicate_groups(short_rows, {str(row["id"]): row for row in short_rows}, short_audit)
+        short_warning = next(
+            issue for issue in short_audit.warnings if issue.code == "NON_PUBLIC_DUPLICATE_REVIEW_REQUIRED"
+        )
+
+        fuzzy_text = " ".join(f"fuzzy-token-{index}" for index in range(40))
+        fuzzy_rows = [
+            {"id": "src-public", "visibility": "public", "captured_text": fuzzy_text, "duplicate_reviews": []},
+            {
+                "id": "src-private",
+                "visibility": "supplied_private",
+                "captured_text": fuzzy_text,
+                "duplicate_reviews": [],
+            },
+        ]
+        fuzzy_audit = csr.Audit()
+        csr.detect_fuzzy_duplicates(
+            fuzzy_rows,
+            {"src-public": "src-public", "src-private": "src-private"},
+            fuzzy_audit,
+        )
+        fuzzy_warning = next(
+            issue for issue in fuzzy_audit.warnings if issue.code == "NON_PUBLIC_DUPLICATE_REVIEW_REQUIRED"
+        )
+        self.assertEqual(short_warning.message, fuzzy_warning.message)
+        for issue in (short_warning, fuzzy_warning):
+            rendered_issue = f"{issue.code} {issue.path} {issue.message}".lower()
+            for forbidden in ("exact", "captured_text", "shingle", "similarity", "%"):
+                self.assertNotIn(forbidden, rendered_issue)
+
+        public_rows = [{**row, "visibility": "public"} for row in fuzzy_rows]
+        public_audit = csr.Audit()
+        csr.detect_fuzzy_duplicates(
+            public_rows,
+            {"src-public": "src-public", "src-private": "src-private"},
+            public_audit,
+        )
+        public_warning = next(issue for issue in public_audit.warnings if issue.code == "POSSIBLE_DUPLICATE")
+        self.assertEqual("Five-token shingle similarity is 100%; record a duplicate_review decision.", public_warning.message)
+
+    def test_non_public_duplicate_budget_warning_withholds_scan_counts(self) -> None:
+        rows = [
+            {
+                "id": "src-private",
+                "visibility": "supplied_private",
+                "captured_text": " ".join(f"private-token-{index}" for index in range(40)),
+                "duplicate_reviews": [],
+            }
+        ]
+        audit = csr.Audit()
+        with mock.patch.object(csr, "MAX_FUZZY_STORED_SHINGLES", 1):
+            csr.detect_fuzzy_duplicates(rows, {"src-private": "src-private"}, audit)
+        warning = next(issue for issue in audit.warnings if issue.code == "FUZZY_SCAN_SKIPPED")
+        self.assertEqual(
+            "Duplicate comparison exceeded a bounded resource limit; review the private ledger externally. Record-specific scan details are withheld.",
+            warning.message,
+        )
+
+    def test_non_public_repost_time_error_withholds_chronology(self) -> None:
+        private_rows = {
+            "src-private": {
+                "visibility": "supplied_private",
+                "repost_of": "src-public",
+                "published_at": "2026-01-01T00:00:00Z",
+            },
+            "src-public": {
+                "visibility": "public",
+                "repost_of": None,
+                "published_at": "2026-01-02T00:00:00Z",
+            },
+        }
+        private_audit = csr.Audit()
+        csr.detect_repost_cycles(private_rows, private_audit)
+        error = next(issue for issue in private_audit.errors if issue.code == "NON_PUBLIC_DUPLICATE_INTEGRITY")
+        rendered_error = f"{error.code} {error.path} {error.message}".lower()
+        for forbidden in ("predate", "published_at", "src-public", "2026-01-01", "repost"):
+            self.assertNotIn(forbidden, rendered_error)
+
+        public_rows = json.loads(json.dumps(private_rows))
+        public_rows["src-private"]["visibility"] = "public"
+        public_audit = csr.Audit()
+        csr.detect_repost_cycles(public_rows, public_audit)
+        public_error = next(issue for issue in public_audit.errors if issue.code == "REPOST_TIME_ORDER")
+        self.assertEqual("A repost cannot predate its declared origin 'src-public'.", public_error.message)
 
     def test_invalid_private_visibility_does_not_change_fingerprint_with_text(self) -> None:
         def fingerprint(private_text: str) -> str:
@@ -1644,6 +1974,85 @@ class IntegrityHardeningTests(unittest.TestCase):
             return csr.semantic_fingerprint({}, [], [private], [], {})
 
         self.assertEqual(fingerprint("yes"), fingerprint("no"))
+
+    def test_non_public_fingerprint_uses_only_the_provenance_allowlist(self) -> None:
+        base = json.loads(json.dumps(source(self.bundle, "src-001")))
+        base.update(
+            {
+                "id": "src-private",
+                "visibility": "supplied_private",
+                "record_ref": "survey.csv:row-7",
+                "source_file_sha256": "sha256:" + "a" * 64,
+                "excerpt": "private answer yes",
+            }
+        )
+
+        def fingerprint(row: dict[str, object]) -> str:
+            return csr.semantic_fingerprint({}, [], [row], [], {})
+
+        original = fingerprint(base)
+        disallowed_source_fields = csr.SOURCE_REQUIRED - {
+            "id",
+            "record_ref",
+            "source_file_sha256",
+            "excerpt",
+        }
+        for field in sorted(disallowed_source_fields):
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(base))
+                changed[field] = "supplied-private" if field == "visibility" else f"private-change:{field}"
+                self.assertEqual(original, fingerprint(changed))
+
+        changed_excerpt = json.loads(json.dumps(base))
+        changed_excerpt["excerpt"] = "private answer no"
+        self.assertEqual(original, fingerprint(changed_excerpt))
+        changed_excerpt["excerpt"] = None
+        self.assertEqual(original, fingerprint(changed_excerpt))
+
+        for field, value in (
+            ("id", "src-private-two"),
+            ("record_ref", "survey.csv:row-8"),
+            ("source_file_sha256", "sha256:" + "b" * 64),
+        ):
+            with self.subTest(allowlisted_field=field):
+                changed = json.loads(json.dumps(base))
+                changed[field] = value
+                self.assertNotEqual(original, fingerprint(changed))
+
+    def test_invalid_non_public_allowlist_values_cannot_be_fingerprint_oracles(self) -> None:
+        def fingerprint(source_id: str, record_ref: str, file_hash: str) -> str:
+            return csr.semantic_fingerprint(
+                {},
+                [],
+                [
+                    {
+                        "id": source_id,
+                        "visibility": "supplied-private",
+                        "record_ref": record_ref,
+                        "source_file_sha256": file_hash,
+                        "excerpt": "private",
+                    }
+                ],
+                [],
+                {},
+            )
+
+        self.assertEqual(
+            fingerprint("PRIVATE-YES", "person-one@example.com", "yes"),
+            fingerprint("PRIVATE-NO", "person-two@example.com", "no"),
+        )
+
+    def test_all_public_fingerprint_bytes_remain_unchanged(self) -> None:
+        self.assertEqual(
+            "sha256:3cf74939dcf938d2078b0dfe50c6f133e5879007b6fbcf7b8e5d6026f75a935b",
+            csr.semantic_fingerprint(
+                self.bundle["plan"],
+                self.bundle["queries"],
+                self.bundle["sources"],
+                self.bundle["catalog"]["signals"],
+                self.bundle["notes"],
+            ),
+        )
 
     def test_recent_share_uses_utc_dates(self) -> None:
         self.bundle["plan"]["recency_days"] = 1

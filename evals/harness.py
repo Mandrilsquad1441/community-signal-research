@@ -106,9 +106,19 @@ SIGNAL_ID_RE = re.compile(r"^sig-[a-z0-9-]+$")
 SOURCE_ID_RE = re.compile(r"^src-[a-z0-9]+$")
 BLIND_ID_RE = re.compile(r"^blind-[0-9a-f]{32}$")
 BLIND_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TRIAL_ID_RE = re.compile(r"^trial-[0-9a-f]{16}$")
 SOURCE_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+REQUEST_SEED_ARG_RE = re.compile(r"^--(?:request-)?seed(?:=|$)")
 BOOTSTRAP_ITERATIONS = 10_000
+REQUEST_SEED_STATUS = (
+    "unsupported: captured Codex exec help exposed no --seed or --request-seed "
+    "option; allocation model_seed recorded but not applied"
+)
+MODEL_SEED_NOTE = (
+    "Not applied; this batch's captured Codex exec help exposed no --seed "
+    "or --request-seed option."
+)
 PUBLIC_BUNDLE_MTIME_NS = 946_684_800_000_000_000
 PUBLIC_BUNDLE_ROOT_FILES = (
     "RUBRIC.md",
@@ -116,6 +126,20 @@ PUBLIC_BUNDLE_ROOT_FILES = (
     "score-template.jsonl",
     "scorer.schema.json",
 )
+ADJUDICATOR_CONTRACT = {
+    "ratings": (
+        "Set an integer from 0 to 4 exactly for dimensions listed in disputed_dimensions; "
+        "leave every other rating null, including packet-applicable dimensions that are not disputed."
+    ),
+    "critical_failures": (
+        "When critical_occurrence_disputed is true, replace the template placeholder with an empty array "
+        "for no critical failure or one or more scorer-schema codes for a critical failure. When it is false, "
+        "critical_failures must remain an empty array."
+    ),
+    "rationale": "Explain the assigned rating disputes and, when assigned, the critical-occurrence vote.",
+    "placeholder_rule": "Replace every string beginning with REPLACE_ before submitting a score record.",
+}
+ADJUDICATION_CONTRACT_VERSION = "2.0"
 
 
 def load_json(path: Path) -> Any:
@@ -123,9 +147,13 @@ def load_json(path: Path) -> Any:
         return json.load(handle)
 
 
+def pretty_json_text(value: Any) -> str:
+    return json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+
+
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    path.write_text(pretty_json_text(value), encoding="utf-8", newline="\n")
 
 
 def write_text(path: Path, value: str) -> None:
@@ -434,7 +462,7 @@ def reject_frozen_run_output(path: Path, label: str) -> None:
 
 def write_json_exclusive(path: Path, value: Any) -> None:
     path = prepare_new_output_file(path, "JSON output")
-    payload = json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    payload = pretty_json_text(value)
     with path.open("x", encoding="utf-8", newline="\n") as handle:
         handle.write(payload)
 
@@ -711,6 +739,13 @@ def is_int(value: Any) -> bool:
 
 def bounded_string(value: Any, minimum: int, maximum: int) -> bool:
     return isinstance(value, str) and minimum <= len(value) <= maximum
+
+
+def is_unreplaced_placeholder(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    return stripped == "REPLACE" or stripped.startswith("REPLACE_")
 
 
 def matches(value: Any, pattern: re.Pattern[str]) -> bool:
@@ -1015,7 +1050,28 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         or repository.get("status_short") != []
     ):
         raise ValueError(f"{phase}: operator repository snapshot is malformed or not clean")
-    if not isinstance(config.get("codex"), dict) or not isinstance(config.get("model_catalog_entry"), dict):
+    codex_identity = config.get("codex")
+    expected_codex_keys = {
+        "requested_command",
+        "resolved_path",
+        "binary_sha256",
+        "version_output",
+        "exec_help_sha256",
+        "request_seed_options",
+    }
+    if not isinstance(codex_identity, dict) or set(codex_identity) != expected_codex_keys:
+        raise ValueError(f"{phase}: operator executable/model identity is incomplete")
+    if (
+        any(
+            not bounded_string(codex_identity.get(field), 1, 10000)
+            for field in ("requested_command", "resolved_path", "version_output")
+        )
+        or not matches(codex_identity.get("binary_sha256"), SHA256_RE)
+        or not matches(codex_identity.get("exec_help_sha256"), SHA256_RE)
+        or codex_identity.get("request_seed_options") != []
+    ):
+        raise ValueError(f"{phase}: operator executable identity is malformed or seed-capable")
+    if not isinstance(config.get("model_catalog_entry"), dict):
         raise ValueError(f"{phase}: operator executable/model identity is incomplete")
     string_config_fields = (
         "created_at",
@@ -1034,6 +1090,8 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
     )
     if any(not bounded_string(config.get(field), 1, 10000) for field in string_config_fields):
         raise ValueError(f"{phase}: operator configuration contains a missing text field")
+    if config.get("request_seed") != REQUEST_SEED_STATUS:
+        raise ValueError(f"{phase}: operator request-seed status is not the canonical unsupported declaration")
     boolean_config_fields = (
         "network_search",
         "ephemeral",
@@ -1137,6 +1195,10 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
                 raise ValueError(f"{phase} {trial_id}: started-record {field} mismatch")
         if started.get("allocated_model_seed") != trial.get("model_seed"):
             raise ValueError(f"{phase} {trial_id}: allocated model seed mismatch")
+        if started.get("model_seed_applied") is not False:
+            raise ValueError(f"{phase} {trial_id}: model seed must be recorded as unapplied")
+        if started.get("model_seed_note") != MODEL_SEED_NOTE:
+            raise ValueError(f"{phase} {trial_id}: model seed note is not the canonical unsupported declaration")
         if started.get("operator_version") != config.get("operator_version"):
             raise ValueError(f"{phase} {trial_id}: operator version mismatch")
         if started.get("schema_version") != "1.0" or not isinstance(started.get("started_at"), str):
@@ -1148,8 +1210,14 @@ def verify_operator_chain(run_dir: Path, allocation: dict[str, Any], phase: str)
         )
         if started.get("prompt_sha256") != sha256_file(prompt_path):
             raise ValueError(f"{phase} {trial_id}: prompt hash mismatch")
-        if not isinstance(started.get("argv"), list) or not started["argv"]:
+        if (
+            not isinstance(started.get("argv"), list)
+            or not started["argv"]
+            or any(not bounded_string(token, 1, 10000) for token in started["argv"])
+        ):
             raise ValueError(f"{phase} {trial_id}: started record has no invocation argv")
+        if any(REQUEST_SEED_ARG_RE.match(token) for token in started["argv"]):
+            raise ValueError(f"{phase} {trial_id}: invocation argv contains an unsupported request-seed option")
         for field, value in started.items():
             if execution.get(field) != value:
                 raise ValueError(f"{phase} {trial_id}: final execution record changed started field {field}")
@@ -1482,15 +1550,35 @@ def read_score_files(paths: Iterable[Path]) -> list[dict[str, Any]]:
     return [record for group in read_score_file_groups(paths, "unclassified") for record in group["records"]]
 
 
-def validate_score_record(record: Any, packet: dict[str, Any]) -> list[str]:
+def validate_score_record(
+    record: Any,
+    packet: dict[str, Any],
+    *,
+    assigned_dimensions: Iterable[str] | None = None,
+    critical_occurrence_assigned: bool = True,
+) -> list[str]:
     errors: list[str] = []
     expected_keys = {"schema_version", "scorer_id", "blind_id", "case_id", "ratings", "critical_failures", "rationale"}
     if not isinstance(record, dict) or set(record) != expected_keys:
         return ["score record has the wrong top-level shape"]
     if record.get("schema_version") != "1.0":
         errors.append("schema_version must be 1.0")
-    if not bounded_string(record.get("scorer_id"), 1, 80) or record.get("scorer_id") == "REPLACE":
-        errors.append("scorer_id must be 1 to 80 characters and must be set")
+    scorer_id = record.get("scorer_id")
+    if (
+        not bounded_string(scorer_id, 1, 80)
+        or not scorer_id.strip()
+        or scorer_id != scorer_id.strip()
+        or any(
+            ord(character) < 32
+            or 127 <= ord(character) <= 159
+            or character in "\u2028\u2029"
+            for character in scorer_id
+        )
+        or is_unreplaced_placeholder(scorer_id)
+    ):
+        errors.append(
+            "scorer_id must be a trimmed nonblank string of 1 to 80 characters without control characters or line separators and must not be an unreplaced REPLACE placeholder"
+        )
     if not matches(record.get("blind_id"), BLIND_ID_RE):
         errors.append("blind_id has invalid format")
     if record.get("blind_id") != packet["blind_id"]:
@@ -1501,22 +1589,96 @@ def validate_score_record(record: Any, packet: dict[str, Any]) -> list[str]:
         errors.append("case_id does not match packet")
     ratings = record.get("ratings")
     applicable = set(packet["applicable_rubric_dimensions"])
+    targeted = assigned_dimensions is not None
+    assigned = applicable if assigned_dimensions is None else set(assigned_dimensions)
+    unknown_assignments = assigned - applicable
+    if unknown_assignments:
+        errors.append(f"assigned dimensions are not packet-applicable: {sorted(unknown_assignments)}")
     if not isinstance(ratings, dict) or set(ratings) != set(DIMENSIONS):
         errors.append("ratings has the wrong shape")
     else:
         for dimension in DIMENSIONS:
             rating = ratings[dimension]
-            if dimension in applicable:
+            if dimension in assigned:
                 if not is_int(rating) or not 0 <= rating <= 4:
                     errors.append(f"{dimension} must be an integer from 0 to 4")
             elif rating is not None:
-                errors.append(f"{dimension} must be null because it is not applicable")
+                if targeted and dimension in applicable:
+                    errors.append(f"{dimension} must be null because it is not assigned for targeted adjudication")
+                else:
+                    errors.append(f"{dimension} must be null because it is not applicable")
     failures = record.get("critical_failures")
     if not valid_unique_string_list(failures) or set(failures) - CRITICAL_CODES:
         errors.append("critical_failures contains invalid or duplicate codes")
-    if not bounded_string(record.get("rationale"), 1, 2000) or record.get("rationale") == "REPLACE":
-        errors.append("rationale must be 1 to 2000 characters and must be set")
+    elif targeted and not critical_occurrence_assigned and failures:
+        errors.append("critical_failures must be empty because critical occurrence is not assigned for adjudication")
+    rationale = record.get("rationale")
+    if (
+        not bounded_string(rationale, 1, 2000)
+        or not rationale.strip()
+        or is_unreplaced_placeholder(rationale)
+    ):
+        errors.append(
+            "rationale must be a nonblank string of 1 to 2000 characters and must not be an unreplaced REPLACE placeholder"
+        )
     return errors
+
+
+def adjudication_record_template(
+    packet: dict[str, Any],
+    disputed_dimensions: Iterable[str],
+    critical_occurrence_disputed: bool,
+) -> dict[str, Any]:
+    disputed = set(disputed_dimensions)
+    return {
+        "schema_version": "1.0",
+        "scorer_id": "REPLACE_WITH_NEW_STABLE_SCORER_ID",
+        "blind_id": packet["blind_id"],
+        "case_id": packet["case_id"],
+        "ratings": {
+            dimension: ("REPLACE_WITH_INTEGER_0_TO_4" if dimension in disputed else None)
+            for dimension in DIMENSIONS
+        },
+        "critical_failures": (
+            "REPLACE_WITH_ARRAY_OF_ZERO_OR_MORE_SCORER_SCHEMA_CODES"
+            if critical_occurrence_disputed
+            else []
+        ),
+        "rationale": "REPLACE_WITH_ASSIGNED_DISPUTE_RATIONALE",
+    }
+
+
+def derive_adjudication_targets(
+    packets: dict[str, dict[str, Any]],
+    initial_by_blind: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    targets: dict[str, dict[str, Any]] = {}
+    for blind_id, packet in packets.items():
+        initial_records = initial_by_blind.get(blind_id, [])
+        if len(initial_records) != 2:
+            continue
+        disputed_dimensions = sorted(
+            dimension
+            for dimension in packet["applicable_rubric_dimensions"]
+            if abs(initial_records[0]["ratings"][dimension] - initial_records[1]["ratings"][dimension]) >= 2
+        )
+        critical_occurrence = bool(initial_records[0]["critical_failures"]) != bool(
+            initial_records[1]["critical_failures"]
+        )
+        if disputed_dimensions or critical_occurrence:
+            targets[blind_id] = {
+                "blind_id": blind_id,
+                "case_id": packet["case_id"],
+                "packet_path": f"packets/{blind_id}.json",
+                "disputed_dimensions": disputed_dimensions,
+                "critical_occurrence_disputed": critical_occurrence,
+                "record_template": adjudication_record_template(
+                    packet,
+                    disputed_dimensions,
+                    critical_occurrence,
+                ),
+            }
+    return targets
 
 
 def validate_scorer_files(
@@ -1535,8 +1697,8 @@ def validate_scorer_files(
     adjudicator_groups = read_score_file_groups(adjudicator_score_paths, "adjudicator", seen_paths)
     all_groups = initial_groups + adjudicator_groups
     used_scorer_ids: dict[str, str] = {}
-    valid_records_by_group: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
 
+    # Bind every physical file to one stable identity before interpreting either role.
     for group in all_groups:
         role = group["role"]
         index = group["input_index"]
@@ -1558,10 +1720,18 @@ def validate_scorer_files(
             )
         else:
             used_scorer_ids[stable_scorer_id] = label
+        group["manifest"]["scorer_id"] = stable_scorer_id
 
+    # Initial files are complete packet-level ratings. They must validate before
+    # they are allowed to determine any adjudication target.
+    expected_blind_ids = set(packets)
+    initial_by_blind: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for group in initial_groups:
+        index = group["input_index"]
+        label = f"initial scorer file {index} ({group['path'].name})"
         valid_by_blind: dict[str, dict[str, Any]] = {}
         seen_blind_ids: set[str] = set()
-        for record in records:
+        for record in group["records"]:
             blind_id = record.get("blind_id") if isinstance(record, dict) else None
             if blind_id in seen_blind_ids:
                 validation_errors.append(f"{label}: duplicate record for {blind_id}")
@@ -1577,60 +1747,56 @@ def validate_scorer_files(
                 validation_errors.extend(f"{label}/{blind_id}/{scorer_id}: {error}" for error in errors)
                 continue
             valid_by_blind[blind_id] = record
-        valid_records_by_group[(role, index)] = valid_by_blind
-        group["manifest"].update(
-            {
-                "scorer_id": stable_scorer_id,
-                "blind_ids": sorted(valid_by_blind),
-                "coverage": "complete" if role == "initial" else "targeted",
-            }
-        )
-
-    expected_blind_ids = set(packets)
-    initial_by_blind: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for group in initial_groups:
-        valid_by_blind = valid_records_by_group[("initial", group["input_index"])]
+        group["manifest"].update({"blind_ids": sorted(valid_by_blind), "coverage": "complete"})
         missing = sorted(expected_blind_ids - set(valid_by_blind))
         if missing:
             validation_errors.append(
-                f"initial scorer file {group['input_index']} ({group['path'].name}): missing {len(missing)} blind records"
+                f"{label}: missing {len(missing)} blind records"
             )
         for blind_id, record in valid_by_blind.items():
             initial_by_blind[blind_id].append(record)
 
-    targets: dict[str, dict[str, Any]] = {}
-    for blind_id, packet in packets.items():
-        initial_records = initial_by_blind.get(blind_id, [])
-        if len(initial_records) != 2:
-            continue
-        disputed_dimensions = sorted(
-            dimension
-            for dimension in packet["applicable_rubric_dimensions"]
-            if abs(initial_records[0]["ratings"][dimension] - initial_records[1]["ratings"][dimension]) >= 2
-        )
-        critical_occurrence = bool(initial_records[0]["critical_failures"]) != bool(
-            initial_records[1]["critical_failures"]
-        )
-        if disputed_dimensions or critical_occurrence:
-            targets[blind_id] = {
-                "blind_id": blind_id,
-                "disputed_dimensions": disputed_dimensions,
-                "critical_occurrence_disputed": critical_occurrence,
-            }
+    targets = derive_adjudication_targets(packets, initial_by_blind)
 
+    # Adjudicators are sparse by design: only planned rating disputes are
+    # integers, and only a planned critical-occurrence dispute accepts a vote.
     adjudication_by_blind: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for group in adjudicator_groups:
-        valid_by_blind = valid_records_by_group[("adjudicator", group["input_index"])]
+        index = group["input_index"]
+        label = f"adjudicator scorer file {index} ({group['path'].name})"
+        valid_by_blind: dict[str, dict[str, Any]] = {}
+        seen_blind_ids: set[str] = set()
+        for record in group["records"]:
+            blind_id = record.get("blind_id") if isinstance(record, dict) else None
+            if blind_id in seen_blind_ids:
+                validation_errors.append(f"{label}: duplicate record for {blind_id}")
+                continue
+            if isinstance(blind_id, str):
+                seen_blind_ids.add(blind_id)
+            if blind_id not in packets:
+                validation_errors.append(f"{label}: unknown blind_id {blind_id}")
+                continue
+            target = targets.get(blind_id)
+            if target is None:
+                validation_errors.append(f"{label}: unplanned record for {blind_id}")
+                continue
+            errors = validate_score_record(
+                record,
+                packets[blind_id],
+                assigned_dimensions=target["disputed_dimensions"],
+                critical_occurrence_assigned=target["critical_occurrence_disputed"],
+            )
+            if errors:
+                scorer_id = record.get("scorer_id") if isinstance(record, dict) else None
+                validation_errors.extend(f"{label}/{blind_id}/{scorer_id}: {error}" for error in errors)
+                continue
+            valid_by_blind[blind_id] = record
+        group["manifest"].update({"blind_ids": sorted(valid_by_blind), "coverage": "targeted"})
         if not valid_by_blind:
             validation_errors.append(
-                f"adjudicator scorer file {group['input_index']} ({group['path'].name}): no valid targeted records"
+                f"{label}: no valid targeted records"
             )
         for blind_id, record in valid_by_blind.items():
-            if blind_id not in targets:
-                validation_errors.append(
-                    f"adjudicator scorer file {group['input_index']} ({group['path'].name}): unplanned record for {blind_id}"
-                )
-                continue
             adjudication_by_blind[blind_id].append(record)
 
     if require_adjudication_coverage:
@@ -1651,39 +1817,78 @@ def validate_scorer_files(
     }
 
 
-def make_adjudication_plan(public_bundle: Path, initial_score_paths: list[Path]) -> dict[str, Any]:
-    """Create a treatment-blind response-level plan from exactly two initial score files."""
+def load_adjudication_bundle(
+    public_bundle: Path,
+    label: str,
+) -> tuple[Path, dict[str, Any], dict[str, dict[str, Any]]]:
     if is_link_or_reparse(public_bundle):
-        raise ValueError("adjudication plan: public bundle must not be a link, junction, or reparse point")
-    public_bundle = require_real_directory(public_bundle, "adjudication plan public bundle")
-    require_public_tree_metadata(public_bundle, "adjudication plan public bundle")
+        raise ValueError(f"{label}: public bundle must not be a link, junction, or reparse point")
+    public_bundle = require_real_directory(public_bundle, f"{label} public bundle")
+    require_public_tree_metadata(public_bundle, f"{label} public bundle")
     public_snapshot = tree_snapshot(public_bundle)
-    public_bundle_file_hashes = public_snapshot["file_hashes"]
-    bundle_path = require_manifest_file(public_bundle, "bundle.json", "adjudication plan bundle index")
-    packets_dir = require_real_directory(public_bundle / "packets", "adjudication plan packets directory")
-    bundle = load_json(bundle_path)
+    _, packets = load_public_bundle_snapshot_files(public_bundle, public_snapshot, label)
+    return public_bundle, public_snapshot, packets
+
+
+def load_public_bundle_snapshot_files(
+    public_bundle: Path,
+    public_snapshot: dict[str, Any],
+    label: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Parse bundle/packet objects only from bytes bound to one captured tree snapshot."""
+    bundle_path = require_manifest_file(public_bundle, "bundle.json", f"{label} bundle index")
+    packets_dir = require_real_directory(public_bundle / "packets", f"{label} packets directory")
+    bundle_bytes = bundle_path.read_bytes()
+    if sha256_bytes(bundle_bytes) != public_snapshot["file_hashes"].get("bundle.json"):
+        raise ValueError(f"{label}: bundle index bytes do not match the captured public-bundle snapshot")
+    try:
+        bundle = json.loads(bundle_bytes.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{label}: bundle index has invalid UTF-8 at byte {exc.start}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label}: bundle index is invalid JSON: {exc}") from exc
     if (
         not isinstance(bundle, dict)
         or not isinstance(bundle.get("blind_order"), list)
         or not isinstance(bundle.get("blind_key_sha256"), str)
         or not BLIND_KEY_RE.fullmatch(bundle["blind_key_sha256"])
     ):
-        raise ValueError("adjudication plan: public bundle index is malformed")
+        raise ValueError(f"{label}: public bundle index is malformed")
     blind_order = bundle["blind_order"]
     if (
         len(blind_order) != len(set(blind_order))
         or not all(isinstance(item, str) and BLIND_ID_RE.fullmatch(item) for item in blind_order)
     ):
-        raise ValueError("adjudication plan: public bundle blind order is malformed")
-    require_exact_public_bundle_files(public_snapshot, blind_order, "adjudication plan public bundle")
-    packets = {}
+        raise ValueError(f"{label}: public bundle blind order is malformed")
+    require_exact_public_bundle_files(public_snapshot, blind_order, f"{label} public bundle")
+    packets: dict[str, dict[str, Any]] = {}
     for blind_id in blind_order:
+        relative_packet_path = f"packets/{blind_id}.json"
         packet_path = require_manifest_file(
             packets_dir,
             f"{blind_id}.json",
-            f"adjudication plan {blind_id} packet",
+            f"{label} {blind_id} packet",
         )
-        packets[blind_id] = load_json(packet_path)
+        packet_bytes = packet_path.read_bytes()
+        if sha256_bytes(packet_bytes) != public_snapshot["file_hashes"].get(relative_packet_path):
+            raise ValueError(
+                f"{label}: {blind_id} packet bytes do not match the captured public-bundle snapshot"
+            )
+        try:
+            packet = json.loads(packet_bytes.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{label}: {blind_id} packet has invalid UTF-8 at byte {exc.start}") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{label}: {blind_id} packet is invalid JSON: {exc}") from exc
+        packets[blind_id] = packet
+    return bundle, packets
+
+
+def make_adjudication_plan_from_packets(
+    public_snapshot: dict[str, Any],
+    packets: dict[str, dict[str, Any]],
+    initial_score_paths: list[Path],
+) -> dict[str, Any]:
     scorer_inputs = validate_scorer_files(
         initial_score_paths,
         [],
@@ -1694,12 +1899,87 @@ def make_adjudication_plan(public_bundle: Path, initial_score_paths: list[Path])
         raise ValueError("adjudication plan: " + "; ".join(scorer_inputs["validation_errors"]))
     targets = scorer_inputs["adjudication_targets"]
     return {
-        "schema_version": "1.0",
-        "public_bundle_file_hashes": public_bundle_file_hashes,
+        "schema_version": "2.0",
+        "adjudication_contract_version": ADJUDICATION_CONTRACT_VERSION,
+        "adjudicator_contract": dict(ADJUDICATOR_CONTRACT),
+        "public_bundle_file_hashes": public_snapshot["file_hashes"],
         "public_bundle_directories": public_snapshot["directories"],
         "initial_scorer_files": scorer_inputs["file_manifest"],
         "target_count": len(targets),
         "targets": [targets[key] for key in sorted(targets)],
+    }
+
+
+def make_adjudication_plan(public_bundle: Path, initial_score_paths: list[Path]) -> dict[str, Any]:
+    """Create a treatment-blind response-level plan from exactly two initial score files."""
+    _, public_snapshot, packets = load_adjudication_bundle(public_bundle, "adjudication plan")
+    return make_adjudication_plan_from_packets(public_snapshot, packets, initial_score_paths)
+
+
+def check_adjudication(
+    public_bundle: Path,
+    locked_plan_path: Path,
+    initial_score_paths: list[Path],
+    adjudicator_score_paths: list[Path],
+) -> dict[str, Any]:
+    """Validate a locked plan and targeted records without opening the private map."""
+    require_regular_file(locked_plan_path, "adjudication check locked plan")
+    locked_plan_path = locked_plan_path.resolve(strict=True)
+    locked_plan_bytes = locked_plan_path.read_bytes()
+    try:
+        locked_plan = json.loads(locked_plan_bytes.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"adjudication check: locked plan has invalid UTF-8 at byte {exc.start}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"adjudication check: locked plan is invalid JSON: {exc}") from exc
+
+    public_bundle, public_snapshot, packets = load_adjudication_bundle(public_bundle, "adjudication check")
+    expected_plan = make_adjudication_plan_from_packets(public_snapshot, packets, initial_score_paths)
+    scorer_inputs = validate_scorer_files(
+        initial_score_paths,
+        adjudicator_score_paths,
+        packets,
+    )
+    validation_errors: list[str] = []
+    if not adjudicator_score_paths:
+        validation_errors.append("at least one adjudicator scorer file is required")
+    if locked_plan != expected_plan:
+        validation_errors.append("locked adjudication plan does not match the public bundle and exact initial scorer files")
+    if locked_plan_bytes != pretty_json_text(expected_plan).encode("utf-8"):
+        validation_errors.append("locked adjudication plan bytes do not match the canonical expected plan")
+    if scorer_inputs["file_manifest"][: len(initial_score_paths)] != expected_plan["initial_scorer_files"]:
+        validation_errors.append("initial scorer files changed while adjudication was checked")
+    validation_errors.extend(scorer_inputs["validation_errors"])
+    covered_target_count = sum(
+        len(scorer_inputs["adjudication_by_blind"].get(blind_id, [])) == 1
+        for blind_id in scorer_inputs["adjudication_targets"]
+    )
+    if locked_plan_path.read_bytes() != locked_plan_bytes:
+        raise ValueError("adjudication check: locked plan changed while it was being checked")
+    require_public_tree_metadata(public_bundle, "adjudication check stable public bundle")
+    stable_public_snapshot = tree_snapshot(public_bundle)
+    require_hashes(
+        "adjudication check stable public bundle files",
+        public_snapshot["file_hashes"],
+        stable_public_snapshot["file_hashes"],
+    )
+    require_directories(
+        "adjudication check stable public bundle",
+        public_snapshot["directories"],
+        stable_public_snapshot["directories"],
+    )
+    for scorer_path, expected_hash in scorer_inputs["file_bindings"]:
+        if sha256_file(scorer_path) != expected_hash:
+            raise ValueError(f"adjudication check: scorer file changed while it was being checked: {scorer_path.name}")
+    return {
+        "schema_version": "1.0",
+        "adjudication_contract_version": ADJUDICATION_CONTRACT_VERSION,
+        "ok": not validation_errors,
+        "locked_plan_sha256": sha256_bytes(locked_plan_bytes),
+        "target_count": len(scorer_inputs["adjudication_targets"]),
+        "covered_target_count": covered_target_count,
+        "scorer_files": scorer_inputs["file_manifest"],
+        "validation_errors": validation_errors,
     }
 
 
@@ -1871,7 +2151,12 @@ def public_operator_config(config: Any) -> dict[str, Any] | None:
     if isinstance(codex, dict):
         result["codex"] = {
             key: codex[key]
-            for key in ("binary_sha256", "version_output")
+            for key in (
+                "binary_sha256",
+                "version_output",
+                "exec_help_sha256",
+                "request_seed_options",
+            )
             if key in codex
         }
     catalog = config.get("model_catalog_entry")
@@ -1886,6 +2171,7 @@ def aggregate_scores(
     initial_score_paths: list[Path],
     seed: int,
     adjudicator_score_paths: list[Path] | None = None,
+    adjudication_plan_path: Path | None = None,
 ) -> dict[str, Any]:
     if is_link_or_reparse(public_bundle):
         raise ValueError("score phase: public bundle must not be a link, junction, or reparse point")
@@ -2028,19 +2314,19 @@ def aggregate_scores(
     if mapping.get("scoring_order") != expected_scoring_order:
         raise ValueError("score phase: scoring order does not match the keyed allocation")
     map_by_blind = {row["blind_id"]: row for row in mapped_trials}
-    packets_dir = require_real_directory(public_bundle / "packets", "score phase packets directory")
-    packets = {}
-    for blind_id in map_by_blind:
-        packet_path = require_manifest_file(
-            packets_dir,
-            f"{blind_id}.json",
-            f"score phase {blind_id} packet",
-        )
-        packets[blind_id] = load_json(packet_path)
+    bundle_index, packets = load_public_bundle_snapshot_files(
+        public_bundle,
+        actual_public_snapshot,
+        "score phase",
+    )
+    if set(packets) != set(map_by_blind):
+        raise ValueError("score phase: public packet identities do not match the private map")
     for blind_id, packet in packets.items():
         allocation = map_by_blind[blind_id]
-        packet_path = public_bundle / "packets" / f"{blind_id}.json"
-        if sha256_file(packet_path) != allocation.get("blind_packet_sha256"):
+        packet_snapshot_hash = actual_public_snapshot["file_hashes"].get(
+            f"packets/{blind_id}.json"
+        )
+        if packet_snapshot_hash != allocation.get("blind_packet_sha256"):
             raise ValueError(f"score phase {blind_id}: blind packet hash mismatch")
         if not isinstance(packet, dict) or packet.get("blind_id") != blind_id:
             raise ValueError(f"score phase {blind_id}: packet identity mismatch")
@@ -2061,7 +2347,6 @@ def aggregate_scores(
             if packet.get("raw_response_byte_count") != len(raw_bytes):
                 raise ValueError(f"score phase {blind_id}: raw response byte-count mismatch")
 
-    bundle_index = load_json(require_manifest_file(public_bundle, "bundle.json", "score phase bundle index"))
     if (
         not isinstance(bundle_index, dict)
         or bundle_index.get("blind_order") != expected_scoring_order
@@ -2079,6 +2364,74 @@ def aggregate_scores(
     adjudication_targets = scorer_inputs["adjudication_targets"]
     scorer_file_manifest = scorer_inputs["file_manifest"]
     validation_errors: list[str] = list(scorer_inputs["validation_errors"])
+
+    plan_required = bool(adjudication_targets)
+    expected_adjudication_plan: dict[str, Any] | None = None
+    if plan_required:
+        try:
+            expected_adjudication_plan = make_adjudication_plan_from_packets(
+                actual_public_snapshot,
+                packets,
+                initial_score_paths,
+            )
+            first_initial_manifest = scorer_file_manifest[: len(initial_score_paths)]
+            if expected_adjudication_plan["initial_scorer_files"] != first_initial_manifest:
+                validation_errors.append(
+                    "initial scorer files changed between score binding and adjudication plan derivation"
+                )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            validation_errors.append(f"cannot derive the expected adjudication plan: {exc}")
+
+    locked_plan_path: Path | None = None
+    locked_plan_bytes: bytes | None = None
+    locked_plan: Any | None = None
+    adjudication_plan_manifest: dict[str, Any] = {
+        "required": plan_required,
+        "provided": adjudication_plan_path is not None,
+        "sha256": None,
+        "byte_count": None,
+        "target_count": None,
+        "schema_version": None,
+        "adjudication_contract_version": None,
+    }
+    if adjudication_plan_path is None:
+        if plan_required:
+            validation_errors.append("adjudication plan is required because deterministic targets exist")
+    elif not adjudication_plan_path.is_file() or is_link_or_reparse(adjudication_plan_path):
+        validation_errors.append("adjudication plan must be a regular non-linked file")
+    else:
+        try:
+            locked_plan_path = adjudication_plan_path.resolve(strict=True)
+            locked_plan_bytes = locked_plan_path.read_bytes()
+            adjudication_plan_manifest["sha256"] = sha256_bytes(locked_plan_bytes)
+            adjudication_plan_manifest["byte_count"] = len(locked_plan_bytes)
+            locked_plan = json.loads(locked_plan_bytes.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            validation_errors.append(f"adjudication plan has invalid UTF-8 at byte {exc.start}")
+        except json.JSONDecodeError as exc:
+            validation_errors.append(f"adjudication plan is invalid JSON: {exc}")
+        except OSError as exc:
+            validation_errors.append(f"adjudication plan could not be read: {exc}")
+
+        if isinstance(locked_plan, dict):
+            target_count = locked_plan.get("target_count")
+            adjudication_plan_manifest["target_count"] = target_count if is_int(target_count) else None
+            adjudication_plan_manifest["schema_version"] = locked_plan.get("schema_version")
+            adjudication_plan_manifest["adjudication_contract_version"] = locked_plan.get(
+                "adjudication_contract_version"
+            )
+        if not plan_required:
+            validation_errors.append("adjudication plan must be omitted when no deterministic targets exist")
+        elif expected_adjudication_plan is not None and locked_plan != expected_adjudication_plan:
+            validation_errors.append(
+                "adjudication plan structure does not match the public bundle and exact initial scorer files"
+            )
+        if (
+            plan_required
+            and expected_adjudication_plan is not None
+            and locked_plan_bytes != pretty_json_text(expected_adjudication_plan).encode("utf-8")
+        ):
+            validation_errors.append("adjudication plan bytes do not match the canonical expected plan")
 
     cases = case_index()
     oracles = oracle_index()
@@ -2323,6 +2676,13 @@ def aggregate_scores(
     for scorer_path, expected_hash in scorer_inputs["file_bindings"]:
         if sha256_file(scorer_path) != expected_hash:
             raise ValueError(f"score phase: scorer file changed during aggregation: {scorer_path.name}")
+    if locked_plan_path is not None and locked_plan_bytes is not None:
+        if (
+            not locked_plan_path.is_file()
+            or is_link_or_reparse(locked_plan_path)
+            or locked_plan_path.read_bytes() != locked_plan_bytes
+        ):
+            raise ValueError("score phase: adjudication plan changed during aggregation")
 
     result_manifest = {
         "seeds": {
@@ -2338,6 +2698,7 @@ def aggregate_scores(
             "trial_pass_threshold": 75,
             "critical_failure_score_cap": 49,
             "initial_scorer_count": 2,
+            "adjudication_contract_version": ADJUDICATION_CONTRACT_VERSION,
             "adjudication_policy": "one response-level third score only for deterministic initial disagreement targets",
             "adjudication_targets": [adjudication_targets[key] for key in sorted(adjudication_targets)],
             "operator": public_operator_config(mapping.get("operator_config")),
@@ -2355,6 +2716,7 @@ def aggregate_scores(
             "operator_execution_chain_files": mapping.get("operator_chain_file_hashes"),
             "blind_key_sha256": blind_key_sha256,
             "private_map_sha256": private_map_input_sha256,
+            "adjudication_plan": adjudication_plan_manifest,
             "public_bundle_files": mapping.get("public_bundle_file_hashes"),
             "public_bundle_directories": mapping.get("public_bundle_directories"),
             "raw_responses": {
@@ -2371,6 +2733,7 @@ def aggregate_scores(
 
     return {
         "schema_version": "1.0",
+        "adjudication_contract_version": ADJUDICATION_CONTRACT_VERSION,
         "manifest": result_manifest,
         "status": {
             "protocol_valid": protocol_pass,
@@ -2430,11 +2793,21 @@ def build_parser() -> argparse.ArgumentParser:
     adjudication.add_argument("--initial-scores", type=Path, action="append", required=True)
     adjudication.add_argument("--out", type=Path, required=True)
 
+    adjudication_check = subparsers.add_parser(
+        "adjudication-check",
+        help="Validate a locked adjudication plan and targeted score files without the private map",
+    )
+    adjudication_check.add_argument("--public-bundle", type=Path, required=True)
+    adjudication_check.add_argument("--plan", type=Path, required=True)
+    adjudication_check.add_argument("--initial-scores", type=Path, action="append", required=True)
+    adjudication_check.add_argument("--adjudicator-scores", type=Path, action="append", required=True)
+
     score = subparsers.add_parser("score", help="Combine deterministic checks with independent blind scorer files")
     score.add_argument("--public-bundle", type=Path, required=True)
     score.add_argument("--private-map", type=Path, required=True)
     score.add_argument("--initial-scores", type=Path, action="append", required=True)
     score.add_argument("--adjudicator-scores", type=Path, action="append", default=[])
+    score.add_argument("--adjudication-plan", type=Path)
     score.add_argument("--seed", type=int, default=20260830)
     score.add_argument("--out", type=Path, required=True)
     return parser
@@ -2463,6 +2836,15 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(f"Refusing to overwrite adjudication plan: {output_path}")
             result = make_adjudication_plan(args.public_bundle, args.initial_scores)
             write_json_exclusive(output_path, result)
+        elif args.command == "adjudication-check":
+            result = check_adjudication(
+                args.public_bundle,
+                args.plan,
+                args.initial_scores,
+                args.adjudicator_scores,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+            return 0 if result["ok"] else 1
         elif args.command == "score":
             require_regular_file(args.private_map, "score phase private map")
             output_mapping = load_json(args.private_map)
@@ -2483,6 +2865,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.initial_scores,
                 args.seed,
                 args.adjudicator_scores,
+                args.adjudication_plan,
             )
             write_json_exclusive(output_path, result)
         else:  # pragma: no cover
