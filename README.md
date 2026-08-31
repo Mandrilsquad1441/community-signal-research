@@ -242,6 +242,8 @@ The release gate includes deterministic regression tests, static skill validatio
 
 Confirmatory v3 was protocol-valid and showed a skill mean of 96.276, a 96.67% trial pass rate, and a paired mean lift of +30.069 points, but it [failed the preregistered zero-critical-failure gate](evals/evidence/FAILED-CONFIRMATORY-V3.md): two of 60 skill trials had critical failures. Its [exact report](evals/evidence/confirmatory-v3-report.json) is preserved without repair, replacement, rescoring, or threshold changes. It is a disclosed negative release-gate result, not evidence that the next candidate passes.
 
+The first targeted [post-v3 development stress](evals/evidence/FAILED-DEVELOPMENT-STRESS-V4-1.md) also failed and is preserved rather than cherry-picked away: one quote replicate changed capitalization, and both privacy reviewers agreed that three private-source replicates disclosed record-specific facts in narrative fields. The successor adds a literal citation lock and a public-only private-source firewall; it still requires a fresh development pass and confirmatory run.
+
 An earlier interrupted confirmatory attempt is disclosed separately as [ineligible and unscored](evals/evidence/ABORTED-CONFIRMATORY-V2.md); it is not used as behavioral evidence.
 
 <!-- EVALUATION_RESULTS_PLACEHOLDER: replace this note with links and exact committed results after the evaluation suite is merged and rerun. -->
